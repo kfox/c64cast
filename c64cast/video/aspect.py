@@ -96,12 +96,34 @@ def fit_to_aspect(
     return img
 
 
-def apply_aspect(img: np.ndarray, aspect_mode: str, aspect: float) -> np.ndarray:
-    """``img`` fit to ``aspect`` the way the slideshow's ``aspect_mode`` asks:
-    ``"crop"`` fills, ``"fit"`` pads, ``"stretch"`` leaves it for the display
-    mode's resize to distort."""
-    if aspect_mode == "fit":
-        return fit_to_aspect(img, aspect)
-    if aspect_mode == "stretch":
-        return img
-    return crop_to_aspect(img, aspect)
+def kept_aspect(width: int, height: int, aspect_mode: str, aspect: float) -> float:
+    """The aspect ``aspect_mode`` center-crops a ``width`` x ``height`` source
+    to before any padding: the screen's ``aspect`` for ``"crop"``, the
+    source's own (no crop) for ``"fit"`` and ``"stretch"``, and for
+    ``"hybrid"`` the mean of the two, which takes 16:9 into 4:3 to the
+    broadcast 14:9."""
+    source = width / height
+    if aspect_mode == "crop":
+        return aspect
+    if aspect_mode == "hybrid":
+        return (source + aspect) / 2
+    return source
+
+
+def pads(aspect_mode: str) -> bool:
+    """Whether ``aspect_mode`` letterboxes or pillarboxes what it keeps."""
+    return aspect_mode in ("fit", "hybrid")
+
+
+def crop_for_mode(img: np.ndarray, aspect_mode: str, aspect: float) -> np.ndarray:
+    """The part of ``img`` that ``aspect_mode`` shows on a screen of
+    ``aspect``, unpadded: the picture whose pixels the color statistics may
+    read."""
+    h, w = img.shape[:2]
+    return crop_to_aspect(img, kept_aspect(w, h, aspect_mode, aspect))
+
+
+def pad_for_mode(picture: np.ndarray, aspect_mode: str, aspect: float) -> np.ndarray:
+    """``picture`` (what `crop_for_mode` kept) framed for a screen of
+    ``aspect``: padded black where ``aspect_mode`` pads, else as it is."""
+    return fit_to_aspect(picture, aspect) if pads(aspect_mode) else picture

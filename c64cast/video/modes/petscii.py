@@ -9,7 +9,11 @@ from c64cast.hw.backend import C64Backend
 from c64cast.hw.c64 import SCREEN, VIC, RegionID
 from c64cast.scenes.text_surface import CharTextSurface
 from c64cast.video.modes_irq import push_screen_via_reu
-from c64cast.video.palette import COLOR_MATCH_MODES, apply_color_fit
+from c64cast.video.palette import (
+    COLOR_MATCH_MODES,
+    PETSCII_AUTO_FIT_WHITE_LEVEL,
+    apply_color_fit,
+)
 from c64cast.video.petscii_styles import (
     RANDOM_STYLE,
     STYLE_NAMES,
@@ -39,6 +43,7 @@ class PETSCIIDisplayMode(CharDisplayMode):
     frame_target_size = (40, 25)
     LIVE_PARAMS = {"auto_fit_strength": (0.0, 1.0)}
     LIVE_CHOICES = {"color_match": COLOR_MATCH_MODES}
+    _auto_fit_white_level = PETSCII_AUTO_FIT_WHITE_LEVEL
 
     def __init__(
         self,
@@ -50,11 +55,12 @@ class PETSCIIDisplayMode(CharDisplayMode):
         channel_boost: list[float] | None = None,
         perceptual: bool = False,
         auto_fit_strength: float = 1.0,
-        auto_fit_white_level: float = 255.0,
+        auto_fit_white_level: float | None = None,
     ):
         validate_style(style)
         self._auto_fit_strength = float(min(1.0, max(0.0, auto_fit_strength)))
-        self._auto_fit_white_level = float(auto_fit_white_level)
+        if auto_fit_white_level is not None:
+            self._auto_fit_white_level = float(auto_fit_white_level)
         self._perceptual = bool(perceptual)
         self._configured_style = style  # may be "random" sentinel
         self._style_name = style if style != RANDOM_STYLE else pick_random_style_name()

@@ -4,7 +4,7 @@ generated: true
 
 # Index
 
-Every name c64cast answers to — 474 of them — and the pages that discuss each one. A configuration key appears bare, and again under its section where two sections share the name; a parameter that belongs to a generator, an effect or a display mode is filed under its own name, with the holder in parentheses. A few entries are ordinary words rather than anything the program prints, for the reader who does not yet know what it calls the thing.
+Every name c64cast answers to — 475 of them — and the pages that discuss each one. A configuration key appears bare, and again under its section where two sections share the name; a parameter that belongs to a generator, an effect or a display mode is filed under its own name, with the holder in parentheses. A few entries are ordinary words rather than anything the program prints, for the reader who does not yet know what it calls the thing.
 
 ## A
 
@@ -24,7 +24,7 @@ Every name c64cast answers to — 474 of them — and the pages that discuss eac
 | `asid_max_sids` | [`asid` (2)](03-vocabulary.md#asid), [ASID (4)](05-sound-and-music.md#asid), [`asid` (B)](21-appendix-b-scene-types.md#asid) |
 | `asid_multi_sid` | [`asid` (2)](03-vocabulary.md#asid), [ASID (4)](05-sound-and-music.md#asid), [`asid` (B)](21-appendix-b-scene-types.md#asid) |
 | `asid_port` | [`asid` (B)](21-appendix-b-scene-types.md#asid) |
-| `aspect_mode` | [`slideshow` (2)](03-vocabulary.md#slideshow), [From Frame to Screen (3)](04-display-pipeline.md#from-frame-to-screen), [`slideshow` (B)](21-appendix-b-scene-types.md#slideshow) |
+| `aspect_mode` | [`slideshow` (2)](03-vocabulary.md#slideshow), [`video` (2)](03-vocabulary.md#video), [From Frame to Screen (3)](04-display-pipeline.md#from-frame-to-screen) |
 | `--audio` | [Audio (G)](26-appendix-g-cli-flags.md#audio) |
 | `[audio]` | [The Extra Layer (1)](02-config-rules.md#the-extra-layer), [The Console (6)](07-inputs-and-outputs.md#the-console), [`audio` (A)](20-appendix-a-configuration.md#audio) |
 | `audio` | [Writing It With `--save-settings` (1)](02-config-rules.md#writing-it-with---save-settings), [Audio (2)](03-vocabulary.md#audio), [`big_text` Wants the Scene to Itself (2)](03-vocabulary.md#big_text-wants-the-scene-to-itself) |
@@ -38,7 +38,7 @@ Every name c64cast answers to — 474 of them — and the pages that discuss eac
 | `auto_fit_shots` | [`color` (A)](20-appendix-a-configuration.md#color) |
 | `auto_fit_strength` | [Saving What a Run Changed (6)](07-inputs-and-outputs.md#saving-what-a-run-changed), [The Vocabulary (6)](07-inputs-and-outputs.md#the-vocabulary), [`color` (A)](20-appendix-a-configuration.md#color) |
 | `auto_fit_strength` (mode) | [`color` (A)](20-appendix-a-configuration.md#color), [`mode` (F)](25-appendix-f-live-targets.md#mode) |
-| `auto_fit_white_level` | [`color` (A)](20-appendix-a-configuration.md#color) |
+| `auto_fit_white_level` | [From Frame to Screen (3)](04-display-pipeline.md#from-frame-to-screen), [`color` (A)](20-appendix-a-configuration.md#color) |
 | `auto_reu` | [`ultimate64` (A)](20-appendix-a-configuration.md#ultimate64) |
 | `autostart` | [`web` (A)](20-appendix-a-configuration.md#web) |
 | `axis` (effect) | [`effect` (F)](25-appendix-f-live-targets.md#effect) |
@@ -204,6 +204,7 @@ Every name c64cast answers to — 474 of them — and the pages that discuss eac
 | `file` | [Paths Inside a File (1)](02-config-rules.md#paths-inside-a-file), [Media on the Command Line (1)](02-config-rules.md#media-on-the-command-line), [The Shape of a Value (1)](02-config-rules.md#the-shape-of-a-value) |
 | `fire` | [`generative` (B)](21-appendix-b-scene-types.md#generative), [Generators (E)](24-appendix-e-generators-effects.md#generators), [`source` (F)](25-appendix-f-live-targets.md#source) |
 | `fireworks` | [Generators (3)](04-display-pipeline.md#generators), [`generative` (B)](21-appendix-b-scene-types.md#generative), [Generators (E)](24-appendix-e-generators-effects.md#generators) |
+| `flat_stickiness` | [`flat_stickiness` (3)](04-display-pipeline.md#flat_stickiness), [`color` (A)](20-appendix-a-configuration.md#color) |
 | `flicker_max_luma_delta` | [Blending Colors the VIC Cannot Draw — `flicker_tolerance` (3)](04-display-pipeline.md#blending-colors-the-vic-cannot-draw--flicker_tolerance), [`color` (A)](20-appendix-a-configuration.md#color) |
 | `flicker_score_pairs` | [`color` (A)](20-appendix-a-configuration.md#color) |
 | `flicker_tolerance` | [Choosing the Sixteen — `hardware_palette` (3)](04-display-pipeline.md#choosing-the-sixteen--hardware_palette), [Blending Colors the VIC Cannot Draw — `flicker_tolerance` (3)](04-display-pipeline.md#blending-colors-the-vic-cannot-draw--flicker_tolerance), [`color` (A)](20-appendix-a-configuration.md#color) |
@@ -366,7 +367,7 @@ Every name c64cast answers to — 474 of them — and the pages that discuss eac
 | `model_path` | [`vision` (A)](20-appendix-a-configuration.md#vision) |
 | `moire2` | [`generative` (B)](21-appendix-b-scene-types.md#generative), [Generators (E)](24-appendix-e-generators-effects.md#generators), [`source` (F)](25-appendix-f-live-targets.md#source) |
 | `--motd-line` | [Updates (G)](26-appendix-g-cli-flags.md#updates) |
-| `motion_smoothing` | [`motion_smoothing` (3)](04-display-pipeline.md#motion_smoothing), [Saving What a Run Changed (6)](07-inputs-and-outputs.md#saving-what-a-run-changed), [The Vocabulary (6)](07-inputs-and-outputs.md#the-vocabulary) |
+| `motion_smoothing` | [`motion_smoothing` (3)](04-display-pipeline.md#motion_smoothing), [`flat_stickiness` (3)](04-display-pipeline.md#flat_stickiness), [Saving What a Run Changed (6)](07-inputs-and-outputs.md#saving-what-a-run-changed) |
 | `motion_smoothing` (mode) | [`color` (A)](20-appendix-a-configuration.md#color), [`mode` (F)](25-appendix-f-live-targets.md#mode) |
 
 ## N

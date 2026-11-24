@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import threading
 from collections import deque
-from collections.abc import Callable
 
 import cv2
 import numpy as np
@@ -108,14 +107,10 @@ class ShotFit:
 
 
 class ShotTracker:
-    """Detects cuts in decode order and builds each new shot's `ShotFit`.
+    """Detects cuts in decode order and builds each new shot's `ShotFit`,
+    from frames already cut to the picture the display mode is given."""
 
-    `prepare` turns a decoded frame into the picture the display mode is
-    given (`VideoScene` passes its aspect crop), so the fit sees what the
-    scene shows."""
-
-    def __init__(self, prepare: Callable[[np.ndarray], np.ndarray], fit_frames: int) -> None:
-        self._prepare = prepare
+    def __init__(self, fit_frames: int) -> None:
         self._fit_frames = fit_frames
         self._detector = AdaptiveCutDetector(ratio=SHOT_CUT_RATIO)
         self._recent: deque[tuple[float, np.ndarray]] = deque(maxlen=self._detector.window + 1)
@@ -132,7 +127,7 @@ class ShotTracker:
         on. The last frame observed would not do: it is as far ahead as the
         decode buffer is deep."""
         self._detector = AdaptiveCutDetector(ratio=SHOT_CUT_RATIO)
-        self._before_seek = None if shown_bgr is None else _downscale(self._prepare(shown_bgr))
+        self._before_seek = None if shown_bgr is None else _downscale(shown_bgr)
         self._recent.clear()
         self._restarted = True
 
@@ -146,7 +141,7 @@ class ShotTracker:
         """Fold in the next decoded frame. Returns the pts of a frame just
         found to start a new shot, with that shot's fit, which keeps filling
         from the frames observed after this."""
-        small = _downscale(self._prepare(frame_bgr))
+        small = _downscale(frame_bgr)
         self._recent.append((pts, small))
         found = None
         if self._restarted:

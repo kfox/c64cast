@@ -211,9 +211,9 @@ def _is_valid_param_holder(holder: str) -> bool:
     return holder in _PARAM_HOLDER_PREFIXES or _FX_LAYER_HOLDER_RE.match(holder) is not None
 
 
-# How a slideshow image is fit to the screen's aspect before the display mode
-# downscales it. See video.aspect.apply_aspect.
-_ASPECT_MODE_CHOICES = ("crop", "fit", "stretch")
+# How a slideshow image or a video frame is fit to the screen's aspect before
+# the display mode downscales it. See video.aspect.kept_aspect.
+_ASPECT_MODE_CHOICES = ("crop", "fit", "stretch", "hybrid")
 
 # Per-scene audio source for generative scenes — the AudioSource building block in
 # audio_source.py. "listen" analyzes the live input without any C64 audio output;
@@ -343,11 +343,11 @@ class HardwareCfg:
         default="auto",
         metadata={
             "help": "The shape of one C64 pixel on the screen being watched, "
-            "which sets the shape a video, picture or webcam frame is cropped "
-            "to so it is not drawn squeezed. 'composite' is a real VIC-II on a "
+            "which sets the shape a video, picture or webcam frame is fit "
+            "to (see aspect_mode) so it is not drawn squeezed. 'composite' is a real VIC-II on a "
             "4:3 set (0.75 wide per unit tall on NTSC, 0.94 on PAL, so the "
             "320x200 screen is 1.2:1 or 1.5:1); 'hdmi' is the Ultimate 64's "
-            "HDMI output (0.83 NTSC, 0.94 PAL); 'square' crops to 1.6:1, as if "
+            "HDMI output (0.83 NTSC, 0.94 PAL); 'square' fits to 1.6:1, as if "
             "the pixels were square. 'auto' (default) is 'hdmi' on an Ultimate "
             "64 and 'composite' on anything else, and under --skip-probe.",
             "choices": PIXEL_ASPECT_CHOICES,
@@ -1278,15 +1278,18 @@ class SceneCfg:
         },
     )
     aspect_mode: str = field(
-        default="crop",
+        default="fit",
         metadata={
-            "help": "How each image is fit to the screen's aspect (which "
-            "[hardware].pixel_aspect sets): 'crop' "
-            "(center-crop to fill — the default, edges lost), 'fit' "
-            "(letterbox/pillarbox so the whole image shows, padded black), or "
-            "'stretch' (distort to fill, no padding or cropping).",
+            "help": "How each image or video frame is fit to the screen's "
+            "aspect (which [hardware].pixel_aspect sets): 'fit' "
+            "(letterbox/pillarbox so the whole picture shows, padded black "
+            "— the default), 'crop' (center-crop to fill, edges lost), "
+            "'hybrid' (center-crop halfway between the source's aspect and "
+            "the screen's, then letterbox/pillarbox the rest — 16:9 into 4:3 "
+            "becomes the broadcast 14:9), or 'stretch' (distort to fill, no "
+            "padding or cropping).",
             "choices": _ASPECT_MODE_CHOICES,
-            "applies_to": ("slideshow",),
+            "applies_to": ("video", "slideshow"),
         },
     )
     target_fps: float | None = field(
@@ -1907,8 +1910,9 @@ class ColorCfg:
     display mode (mcm, mhires, petscii) regardless of palette_mode.
 
     Two stages run before nearest-palette quantization: a per-channel gain
-    (channel_boost) and a set of hue-band corrections. No hue band is built in;
-    user bands are the whole list."""
+    (channel_boost) and a set of hue-band corrections. One hue band is built in,
+    a lift for bright gold; user bands follow it, or replace it with
+    hue_corrections_replace_defaults."""
 
     channel_boost: list[float] = field(
         default_factory=list,
@@ -1934,14 +1938,17 @@ class ColorCfg:
             "help": "List of [[color.hue_corrections]] bands applied before "
             "quantize (keys: hue_lo_deg, hue_hi_deg, sat_thresh, "
             "val_thresh, sat_mult, val_mult, hue_target_deg, name). "
-            "Empty = no hue corrections."
+            "Applied after the built-in band, a V x1.3 lift for bright, "
+            "saturated gold and amber (hue 36-60 degrees, S >= 0.6, V >= 0.2) "
+            "so it lands on yellow or orange instead of brown. Empty = the "
+            "built-in band alone."
         },
     )
     hue_corrections_replace_defaults: bool = field(
         default=False,
         metadata={
-            "help": "No effect: there are no built-in hue_corrections bands to "
-            "replace. Still accepted so existing configs load."
+            "help": "Drop the built-in gold band, so hue_corrections is the "
+            "whole list (empty = no hue corrections)."
         },
     )
     auto_fit: bool = field(
@@ -1993,14 +2000,15 @@ class ColorCfg:
             "bright, so 0.5 (default) goes halfway."
         },
     )
-    auto_fit_white_level: float = field(
-        default=255.0,
+    auto_fit_white_level: float | None = field(
+        default=None,
         metadata={
             "help": "Luma (128..255) the auto_fit stretch puts the source's "
-            "brightest highlights at. 255 (default) stretches them to full "
-            "white; a lower level leaves headroom, so a pale wall or sky lands "
-            "on light gray or a pale color instead of clipping to white or "
-            "cyan, at the cost of a dimmer picture."
+            "brightest highlights at. 255 stretches them to full white; a "
+            "lower level leaves headroom, so a pale wall or sky lands on light "
+            "gray or a pale color instead of clipping to white or cyan, at the "
+            "cost of a dimmer picture. Unset = 220 on mcm and mhires, and 255 "
+            "on petscii, whose glyphs thin out under headroom."
         },
     )
     gray_penalty: float = field(
@@ -2011,6 +2019,18 @@ class ColorCfg:
             "distance (>= 0). Higher keeps pale and desaturated regions "
             "colorful; lower lets a near-gray wall render gray rather than "
             'cyan or light red. Ignored by palette_mode = "grayscale".'
+        },
+    )
+    flat_stickiness: bool = field(
+        default=True,
+        metadata={
+            "help": "mhires percell: hold a pixel's color up to four times as "
+            "firmly on a flat area of the picture as on an edge, so grain on a "
+            "wall or a sky stops churning into pools of shifting colors while "
+            "edges still follow motion. A pixel still moves to a new color once "
+            "the source sits on it. Scales the hysteresis motion_smoothing sets, "
+            "so it does nothing at motion_smoothing = 0. Off holds every pixel "
+            "equally."
         },
     )
     force_palette: bool = field(

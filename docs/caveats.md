@@ -1261,10 +1261,15 @@ toward C64-friendly hues. Hi-res mode skips it because its monochrome-
 per-cell pipeline is already binary.
 
 `channel_boost` defaults to `[1.3, 1.2, 1.0]` (BGR): blue/green lift, red
-left neutral. Red is deliberately not cut: an A/B on real TRON frames showed
-a `0.9` red only raised perceptual (Lab) error and starved warm colors
-(yellow/red/purple), with no benefit to the blues the cut was meant to
-favor. Override per-config via `[color].channel_boost`.
+left neutral. The lift can tint a stretched gray wall or beige case cyan,
+but dropping it on MCM and MultiHires grayed the whole picture on hardware,
+and PETSCII glyphs thin out without it. Red is deliberately not cut: an A/B
+on real TRON frames showed a `0.9` red only raised perceptual (Lab) error
+and starved warm colors (yellow/red/purple), with no benefit to the blues
+the cut was meant to favor. Override per-config via `[color].channel_boost`.
+One hue band is built in: bright, saturated gold and
+amber is lifted so it lands on yellow or orange instead of brown;
+`hue_corrections_replace_defaults = true` drops it.
 
 This stage is orthogonal to `palette_mode`, which only chooses the VIC-II
 per-cell slot-allocation strategy. If you tune `[color]` and only some modes

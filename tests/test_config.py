@@ -1963,6 +1963,11 @@ class ValidateSceneCfgTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "aspect_mode must be one of"):
             scene_factory.validate_scene_cfg(s, self._cfg(), audio_enabled=False)
 
+    def test_video_aspect_mode_rejects_unknown(self):
+        s = cfgmod.SceneCfg(type="video", file="video.mp4", aspect_mode="contain")
+        with self.assertRaisesRegex(ValueError, "video: aspect_mode must be one of"):
+            scene_factory.validate_scene_cfg(s, self._cfg(), audio_enabled=False)
+
     def test_slideshow_display_random_resolves_to_known_mode(self):
         for _ in range(10):
             picked = scene_factory._resolve_slideshow_display("random")
@@ -2865,6 +2870,11 @@ class ValidateAutoFitShotCfgTest(unittest.TestCase):
             cfg.color.auto_fit_white_level = v
             scene_factory.validate_auto_fit_shot_cfg(cfg)
 
+    def test_an_unset_white_level_is_valid(self):
+        cfg = cfgmod.Config()
+        self.assertIsNone(cfg.color.auto_fit_white_level)
+        scene_factory.validate_auto_fit_shot_cfg(cfg)
+
     def test_white_level_outside_128_to_255_raises(self):
         for v in (0.0, 127.0, 256.0, float("nan")):
             cfg = cfgmod.Config()
@@ -3166,6 +3176,41 @@ class WashoutSettingsWiringTest(unittest.TestCase):
                 assert fit is not None
                 self.assertAlmostEqual(fit.white, 255.0)
 
+    def test_an_unset_white_level_leaves_headroom_on_the_bitmap_modes_only(self):
+        from c64cast.video.palette import ColorFit
+
+        for name, level in (("mcm", 220.0), ("mhires", 220.0), ("petscii", 255.0)):
+            with self.subTest(mode=name):
+                mode = scene_factory._build_display_mode(
+                    name, color=cfgmod.ColorCfg(auto_fit_strength=1.0)
+                )
+                mode.set_color_fit(ColorFit(black=0.0, white=200.0, sat_mult=1.0))
+                fit = mode._fit_for_apply()
+                assert fit is not None
+                self.assertAlmostEqual(fit.white, 200.0 * 255.0 / level, places=4)
+
+    def test_an_unset_channel_boost_lifts_blue_and_green_on_every_shaping_mode(self):
+        from c64cast.video.modes import MCMDisplayMode, MultiHiresDisplayMode, PETSCIIDisplayMode
+
+        shaping = (MCMDisplayMode, MultiHiresDisplayMode, PETSCIIDisplayMode)
+        for name in ("mcm", "mhires", "petscii"):
+            with self.subTest(mode=name):
+                mode = scene_factory._build_display_mode(name, color=cfgmod.ColorCfg())
+                assert isinstance(mode, shaping)
+                np.testing.assert_allclose(mode._channel_boost, (1.3, 1.2, 1.0), rtol=1e-6)
+
+    def test_a_configured_channel_boost_reaches_every_shaping_mode(self):
+        from c64cast.video.modes import MCMDisplayMode, MultiHiresDisplayMode, PETSCIIDisplayMode
+
+        shaping = (MCMDisplayMode, MultiHiresDisplayMode, PETSCIIDisplayMode)
+        for name in ("mcm", "mhires", "petscii"):
+            with self.subTest(mode=name):
+                mode = scene_factory._build_display_mode(
+                    name, color=cfgmod.ColorCfg(channel_boost=[1.1, 1.0, 0.9])
+                )
+                assert isinstance(mode, shaping)
+                np.testing.assert_allclose(mode._channel_boost, (1.1, 1.0, 0.9), rtol=1e-6)
+
     def test_config_path_forwards_the_gray_penalty_through_a_palette_mode_change(self):
         from c64cast.video.modes import MCMDisplayMode, MultiHiresDisplayMode
         from c64cast.video.palette import GRAY_INDICES
@@ -3179,6 +3224,17 @@ class WashoutSettingsWiringTest(unittest.TestCase):
                 self.assertEqual(set(mode._gray_penalty[list(GRAY_INDICES)]), {1000.0})
                 mode.set_palette_mode(FakeAPI(), "cheap")
                 self.assertEqual(set(mode._gray_penalty[list(GRAY_INDICES)]), {1000.0})
+
+    def test_config_path_forwards_flat_stickiness_to_mhires(self):
+        from c64cast.video.modes import MultiHiresDisplayMode
+
+        for value in (True, False):
+            with self.subTest(flat_stickiness=value):
+                mode = scene_factory._build_display_mode(
+                    "mhires", color=cfgmod.ColorCfg(flat_stickiness=value)
+                )
+                assert isinstance(mode, MultiHiresDisplayMode)
+                self.assertIs(mode._flat_stickiness, value)
 
 
 class BuildSceneTempoScaleTest(unittest.TestCase):

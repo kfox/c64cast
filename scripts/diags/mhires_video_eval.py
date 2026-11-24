@@ -54,6 +54,12 @@ Per frame (CSV under out/mhires_eval/LABEL/):
 The source each frame is scored against is decoded at full resolution and
 area-resized, so a decode-filter comparison (`--interp`) is scored against
 the same reference whichever filter feeds the renderer.
+
+`--aspect-mode` frames each picture as a scene's `aspect_mode` does, `fit`
+(the scene default) unless told otherwise; `crop` reproduces runs taken
+before that default changed. Fidelity, SSIM and the still cells count only
+the screen the picture covers, so the letterbox bars do not dilute them,
+and the color fits read the unpadded picture.
 """
 
 from __future__ import annotations
@@ -72,18 +78,18 @@ from typing import Any
 import cv2
 import numpy as np
 
-from c64cast.app.config import ColorCfg
+from c64cast.app.config import _ASPECT_MODE_CHOICES, ColorCfg
 from c64cast.scenes.scenes import ONLINE_FIT_WARMUP_FRAMES
-from c64cast.video.aspect import crop_to_aspect
 from c64cast.video.modes import base as modes_base
 from c64cast.video.palette import ColorFit, ColorFitAccumulator
 from scripts.diags import _mhires_metrics as m
 from scripts.diags._offline_video import (
-    ASPECT,
+    DEFAULT_ASPECT_MODE,
     OfflineMhires,
     Tick,
     iter_frames,
     link_cost_s,
+    picture,
     reference_frame,
 )
 
@@ -122,6 +128,7 @@ class Variant:
     fit_blend: float = 1.0
     fit_max_rise: float | None = None
     fit_rise_from: str = "before"
+    aspect_mode: str = DEFAULT_ASPECT_MODE
 
 
 @dataclass
@@ -138,14 +145,16 @@ class FrameRow:
     cells_changed: int
     still_cells: int
     still_changed: int
+    picture_cells: int
 
 
-def _still_ticks(path: str, frames: int) -> list[Tick]:
+def _still_ticks(path: str, frames: int, aspect_mode: str) -> list[Tick]:
     img = cv2.imread(path)
     if img is None:
         raise SystemExit(f"could not read image: {path}")
-    ref = reference_frame(img)
-    return [Tick(i, i / 25.0, img.copy(), ref) for i in range(frames)]
+    ref = reference_frame(img, aspect_mode)
+    shown = picture(img, aspect_mode)
+    return [Tick(i, i / 25.0, shown.copy(), ref) for i in range(frames)]
 
 
 def _clip_ticks(clip: Clip, variant: Variant, *, reference: bool) -> Iterator[Tick]:
@@ -156,6 +165,7 @@ def _clip_ticks(clip: Clip, variant: Variant, *, reference: bool) -> Iterator[Ti
         fps=variant.fps,
         interpolation=variant.interpolation,
         reference=reference,
+        aspect_mode=variant.aspect_mode,
     )
 
 
@@ -220,7 +230,7 @@ def shot_fits(clip: Clip, variant: Variant, cut_times: list[float]) -> dict[floa
             accs[cut] = ColorFitAccumulator(strength=1.0)
             taken = 0
         if accs and taken < ONLINE_FIT_WARMUP_FRAMES:
-            accs[list(accs)[-1]].add(crop_to_aspect(tick.frame, ASPECT))
+            accs[list(accs)[-1]].add(tick.frame)
             taken += 1
     return {cut: acc.result() for cut, acc in accs.items()}
 
@@ -229,10 +239,14 @@ def score_clip(clip: Clip, variant: Variant, cut_times: list[float]) -> dict[str
     cv2.setNumThreads(1)
     if variant.ema_alpha is not None:
         modes_base.PERCELL_PICK_EMA_ALPHA = variant.ema_alpha
-    renderer = OfflineMhires(color=ColorCfg(**variant.color), host_palette=variant.host_palette)
+    renderer = OfflineMhires(
+        color=ColorCfg(**variant.color),
+        host_palette=variant.host_palette,
+        aspect_mode=variant.aspect_mode,
+    )
     is_still = Path(clip.path).suffix.lower() in IMAGE_SUFFIXES
     ticks = (
-        iter(_still_ticks(clip.path, variant.still_frames))
+        iter(_still_ticks(clip.path, variant.still_frames, variant.aspect_mode))
         if is_still
         else _clip_ticks(clip, variant, reference=True)
     )
@@ -267,6 +281,8 @@ def score_clip(clip: Clip, variant: Variant, cut_times: list[float]) -> dict[str
                 )
         writes = renderer.show(tick.frame, tick.t)
         out = renderer.render()
+        mask = renderer.picture_mask
+        picture_cells = m.cells_touched(mask)
         target = renderer.quantizer_target()
         ref_lab = m.oklab(tick.reference)
         out_lab = m.oklab(out)
@@ -278,7 +294,7 @@ def score_clip(clip: Clip, variant: Variant, cut_times: list[float]) -> dict[str
             else np.ones((m.CELL_ROWS, m.CELL_COLS), bool)
         )
         still = (
-            m.cell_mean_delta(prev_ref_lab, ref_lab) < variant.still_delta
+            (m.cell_mean_delta(prev_ref_lab, ref_lab) < variant.still_delta) & picture_cells
             if prev_ref_lab is not None
             else np.zeros_like(changed)
         )
@@ -286,18 +302,19 @@ def score_clip(clip: Clip, variant: Variant, cut_times: list[float]) -> dict[str
             FrameRow(
                 index=tick.index,
                 t=round(tick.t, 4),
-                fid_q=m.oklab_mse(m.blurred_oklab(target, variant.sigma), out_seen)
+                fid_q=m.oklab_mse(m.blurred_oklab(target, variant.sigma), out_seen, mask)
                 * FIDELITY_SCALE,
-                fid_src=m.oklab_mse(m.blurred_oklab(tick.reference, variant.sigma), out_seen)
+                fid_src=m.oklab_mse(m.blurred_oklab(tick.reference, variant.sigma), out_seen, mask)
                 * FIDELITY_SCALE,
-                ssim_q=m.ssim(target_lab[..., 0], out_lab[..., 0]),
-                ssim_src=m.ssim(ref_lab[..., 0], out_lab[..., 0]),
+                ssim_q=m.ssim(target_lab[..., 0], out_lab[..., 0], mask),
+                ssim_src=m.ssim(ref_lab[..., 0], out_lab[..., 0], mask),
                 writes=len(writes),
                 bytes=sum(w.size for w in writes),
                 link_ms=link_cost_s(writes) * 1000.0,
                 cells_changed=int(changed.sum()),
                 still_cells=int(still.sum()),
                 still_changed=int((changed & still).sum()),
+                picture_cells=int(picture_cells.sum()),
             )
         )
         prev_out, prev_ref_lab = out, ref_lab
@@ -322,7 +339,7 @@ def summarize(rows: list[FrameRow], cut_times: list[float] | None, post_cut: int
         "link_ms_per_frame": float(np.mean([r.link_ms for r in steady])),
         "cells_changed_per_frame": float(np.mean([r.cells_changed for r in steady])),
         "shimmer": sum(r.still_changed for r in steady) / still if still else None,
-        "still_cell_share": still / (len(steady) * m.CELL_ROWS * m.CELL_COLS),
+        "still_cell_share": still / sum(r.picture_cells for r in steady),
     }
     if cut_times:
         starts = [_first_index_at(rows, t) for t in cut_times]
@@ -390,6 +407,7 @@ def cmd_score(args: argparse.Namespace) -> int:
         fit_max_sat=args.fit_max_sat,
         fit_max_rise=args.fit_max_rise,
         fit_rise_from=args.fit_rise_from,
+        aspect_mode=args.aspect_mode,
     )
     if variant.at_cut and cuts is None:
         raise SystemExit("--at-cut needs --cuts")
@@ -483,6 +501,12 @@ def main(argv: list[str] | None = None) -> int:
     sc.add_argument("--only", help="comma-separated clip names to run")
     sc.add_argument(
         "--set", action="append", default=[], metavar="FIELD=VALUE", help="[color] override"
+    )
+    sc.add_argument(
+        "--aspect-mode",
+        choices=_ASPECT_MODE_CHOICES,
+        default=DEFAULT_ASPECT_MODE,
+        help="frame each picture as a scene's aspect_mode does (crop: runs before fit became the default)",
     )
     sc.add_argument("--interp", help="swscale filter for the decode downscale (AREA, BICUBIC, ...)")
     sc.add_argument(

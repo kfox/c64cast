@@ -23,6 +23,10 @@ mistake for a cut, so each false positive within `--tolerance` frames of one
 is counted under it; any other false positive counts as "other". The times
 also feed `mhires_video_eval.py --cuts`.
 
+The detectors see each picture as `VideoScene`'s shot tracker does: trimmed
+for `--aspect-mode` (`fit`, the scene default, unless told otherwise) and
+without letterbox bars.
+
 Clips and labels name local, untracked videos; both stay under
 scripts/diags/out/, which is gitignored.
 """
@@ -39,7 +43,7 @@ from typing import Any
 import cv2
 import numpy as np
 
-from c64cast.video.aspect import crop_to_aspect
+from c64cast.app.config import _ASPECT_MODE_CHOICES
 from c64cast.video.shots import AdaptiveCutDetector
 from scripts.diags._cut_detectors import (
     FfmpegScene,
@@ -47,7 +51,7 @@ from scripts.diags._cut_detectors import (
     analysis_frame,
 )
 from scripts.diags._mhires_metrics import match_events
-from scripts.diags._offline_video import ASPECT, iter_frames
+from scripts.diags._offline_video import DEFAULT_ASPECT_MODE, iter_frames
 
 OUT_ROOT = Path(__file__).resolve().parent / "out" / "cut_eval"
 SHEET_ROWS = 8
@@ -58,12 +62,16 @@ EVENT_KINDS = ("flash", "fade", "motion")
 LOOSE_FFMPEG_THRESHOLD = 0.2
 
 
-def analysis_frames(clip: dict[str, Any]) -> tuple[list[float], list[np.ndarray]]:
+def analysis_frames(
+    clip: dict[str, Any], aspect_mode: str = DEFAULT_ASPECT_MODE
+) -> tuple[list[float], list[np.ndarray]]:
     times: list[float] = []
     frames: list[np.ndarray] = []
-    for tick in iter_frames(clip["path"], clip.get("t0", 0.0), clip.get("t1")):
+    for tick in iter_frames(
+        clip["path"], clip.get("t0", 0.0), clip.get("t1"), aspect_mode=aspect_mode
+    ):
         times.append(tick.t)
-        frames.append(analysis_frame(crop_to_aspect(tick.frame, ASPECT)))
+        frames.append(analysis_frame(tick.frame))
     return times, frames
 
 
@@ -106,7 +114,7 @@ def _thumb(frame: np.ndarray, text: str, mark: bool) -> np.ndarray:
 
 def cmd_candidates(args: argparse.Namespace) -> int:
     for clip in _clips(args):
-        times, frames = analysis_frames(clip)
+        times, frames = analysis_frames(clip, args.aspect_mode)
         cands = loose_candidates(frames)
         out = OUT_ROOT / clip["name"]
         out.mkdir(parents=True, exist_ok=True)
@@ -143,7 +151,7 @@ def cmd_score(args: argparse.Namespace) -> int:
         if clip["name"] not in labels:
             continue
         lab = labels[clip["name"]]
-        times, frames = analysis_frames(clip)
+        times, frames = analysis_frames(clip, args.aspect_mode)
         truth = [_index_of(times, t) for t in lab["cuts"]]
         events = {kind: [_index_of(times, t) for t in lab.get(kind, [])] for kind in EVENT_KINDS}
         print(f"\n{clip['name']}: {len(frames)} frames, {len(truth)} cuts")
@@ -190,12 +198,21 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
+    common = argparse.ArgumentParser(add_help=False)
+    common.add_argument(
+        "--aspect-mode",
+        choices=_ASPECT_MODE_CHOICES,
+        default=DEFAULT_ASPECT_MODE,
+        help="trim each picture as a scene's aspect_mode does (crop: runs before fit became the default)",
+    )
     sub = ap.add_subparsers(dest="cmd", required=True)
-    cand = sub.add_parser("candidates", help="write candidate cuts and contact sheets")
+    cand = sub.add_parser(
+        "candidates", parents=[common], help="write candidate cuts and contact sheets"
+    )
     cand.add_argument("--clips", required=True)
     cand.add_argument("--only")
     cand.set_defaults(func=cmd_candidates)
-    sc = sub.add_parser("score", help="score the detectors against labeled cuts")
+    sc = sub.add_parser("score", parents=[common], help="score the detectors against labeled cuts")
     sc.add_argument("--clips", required=True)
     sc.add_argument("--labels", required=True)
     sc.add_argument("--only")

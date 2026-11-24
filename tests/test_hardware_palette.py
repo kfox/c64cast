@@ -706,7 +706,7 @@ class SlideshowPushTest(unittest.TestCase):
         big[:] = (30, 95, 175)
         path = os.path.join(self.tmp, "c.png")
         cv2.imwrite(path, big)
-        self.scene._current_img = big
+        self.scene._current_picture = big
         self.scene._hw_palette = self.control
         self.scene._push_slide_palette()
         widths = [c.args[0].shape[1] for c in self.mode.quantizer_input.call_args_list]

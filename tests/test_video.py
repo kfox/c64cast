@@ -36,7 +36,6 @@ from c64cast.scenes import scenes, video_transport
 from c64cast.scenes.scenes import VideoScene
 from c64cast.scenes.video_transport import VideoTransportControls, _Anchor
 from c64cast.video import video as video_mod
-from c64cast.video.aspect import crop_to_aspect
 from c64cast.video.palette import ColorFit, ColorFitAccumulator
 from c64cast.video.shots import ShotFit, ShotTracker
 from c64cast.video.video import (
@@ -2310,7 +2309,6 @@ class VideoSceneSpliceTest(unittest.TestCase):
         source._frame = np.zeros((200, 320, 3), dtype=np.uint8)
         with (
             mock.patch.object(scenes, "_render_with_overlays"),
-            mock.patch.object(scenes, "crop_to_aspect", side_effect=lambda img, _aspect: img),
         ):
             scene.process_frame(0.0)
             self.assertEqual(scene._av_lag_count, 0)
@@ -2331,7 +2329,6 @@ class VideoSceneSpliceTest(unittest.TestCase):
         source._frame = np.zeros((200, 320, 3), dtype=np.uint8)
         with (
             mock.patch.object(scenes, "_render_with_overlays"),
-            mock.patch.object(scenes, "crop_to_aspect", side_effect=lambda img, _aspect: img),
         ):
             scene.process_frame(0.0)
             scene.transport.touch()
@@ -2351,7 +2348,6 @@ class VideoSceneSpliceTest(unittest.TestCase):
                 scenes, "_annotate_frame_number", lambda img, lbl: labels.append(lbl) or img
             ),
             mock.patch.object(scenes, "_render_with_overlays"),
-            mock.patch.object(scenes, "crop_to_aspect", side_effect=lambda img, _aspect: img),
         ):
             scene.process_frame(0.0)
         self.assertTrue(labels, "frame-number label was not rendered")
@@ -2404,7 +2400,6 @@ class VideoSceneSpliceTest(unittest.TestCase):
                 scenes, "_annotate_frame_number", lambda img, lbl: labels.append(lbl) or img
             ),
             mock.patch.object(scenes, "_render_with_overlays"),
-            mock.patch.object(scenes, "crop_to_aspect", side_effect=lambda img, _aspect: img),
         ):
             scene.process_frame(0.0)
         self.assertTrue(labels, "frame-number label was not rendered")
@@ -2512,7 +2507,6 @@ class VideoSceneIdentitySkipTest(unittest.TestCase):
     def _renders(self, scene: VideoScene, n: int) -> int:
         with (
             mock.patch.object(scenes, "_render_with_overlays") as render,
-            mock.patch.object(scenes, "crop_to_aspect", side_effect=lambda img, _aspect: img),
         ):
             for _ in range(n):
                 scene.process_frame(0.0)
@@ -2542,7 +2536,6 @@ class VideoSceneIdentitySkipTest(unittest.TestCase):
         api.delivery_epoch = 0
         with (
             mock.patch.object(scenes, "_render_with_overlays", side_effect=SocketDMAError("down")),
-            mock.patch.object(scenes, "crop_to_aspect", side_effect=lambda img, _aspect: img),
             self.assertRaises(SocketDMAError),
         ):
             scene.process_frame(0.0)
@@ -3122,7 +3115,7 @@ class VideoSceneFitAspectTest(unittest.TestCase):
     """A video is cropped to the screen aspect of the machine it plays on, not
     to 320x200's own 1.6, which drew a 4:3 picture squeezed on NTSC."""
 
-    def _setup(self, api: FakeAPI) -> tuple[VideoScene, DecodeTarget]:
+    def _setup(self, api: FakeAPI, aspect_mode: str = "crop") -> tuple[VideoScene, DecodeTarget]:
         mode = mock.MagicMock(frame_target_size=(160, 200))
         with (
             mock.patch("c64cast.scenes.scenes.ensure_pyav", return_value=True),
@@ -3130,7 +3123,12 @@ class VideoSceneFitAspectTest(unittest.TestCase):
         ):
             source_cls.return_value.a_stream = None
             scene = VideoScene(
-                cast(C64Backend, api), None, mode, STUB_VIDEO_URL, setup_progress=False
+                cast(C64Backend, api),
+                None,
+                mode,
+                STUB_VIDEO_URL,
+                setup_progress=False,
+                aspect_mode=aspect_mode,
             )
             scene.setup()
             scene.teardown()
@@ -3145,19 +3143,17 @@ class VideoSceneFitAspectTest(unittest.TestCase):
         _, target = self._setup(FakeAPI.ultimate())
         self.assertAlmostEqual(target.aspect, 4 / 3)
 
-    def test_the_render_crops_a_pillarboxed_picture_inside_its_bars(self):
-        scene, _ = self._setup(FakeAPI())
-        source = _StubSource(duration=100.0)
-        scene.source = source  # type: ignore[assignment]  # duck-typed stub
-        source.scene = scene
+    def test_the_decode_crops_a_pillarboxed_picture_inside_its_bars(self):
+        _, target = self._setup(FakeAPI())
         frame: np.ndarray = np.zeros((720, 1280, 3), dtype=np.uint8)
         frame[:, 160:1120] = 200
-        source._frame = frame
-        with mock.patch.object(scenes, "_render_with_overlays") as render:
-            scene.process_frame(0.0)
-        shown = render.call_args.args[2]
+        shown = video_mod._trim_to_crop(frame, target)
         self.assertEqual(shown.shape[:2], (720, 864))
         self.assertTrue((shown == 200).all())
+
+    def test_the_decode_target_carries_the_scenes_aspect_mode(self):
+        _, target = self._setup(FakeAPI(), aspect_mode="hybrid")
+        self.assertEqual(target.aspect_mode, "hybrid")
 
 
 class PlanDecodeSizeTest(unittest.TestCase):
@@ -3222,7 +3218,7 @@ class DemuxDecodeDownscaleTest(unittest.TestCase):
         # Buffered frame carries the downscaled height, not the 4K source, cut
         # to the width the scene's crop keeps.
         _, img = src._video_buf[0]
-        self.assertEqual(img.shape[:2], (h, int(h * 1.6) + 2))
+        self.assertEqual(img.shape[:2], (h, int(h * 1.6)))
 
     def test_no_target_uses_full_res_convert(self):
         src, frame = self._run(decode_target=None)
@@ -3258,30 +3254,51 @@ class DemuxDecodeDownscaleTest(unittest.TestCase):
         # The scene center-crops every frame to 1.6:1, and the plan cannot
         # shrink the axis that crop keeps below the headroom: a 16000x250
         # frame was buffered whole, 12 MB, against 0.85 MB for a 4K one.
-        for (w, h), kept in (((16000, 250), (402, 250)), ((250, 16000), (250, 158))):
+        for (w, h), kept in (((16000, 250), (400, 250)), ((250, 16000), (250, 156))):
             with self.subTest(size=(w, h)):
                 src, _ = self._run(decode_target=DecodeTarget(320, 200, SQUARE), src_w=w, src_h=h)
                 self.assertEqual(src._video_buf[0][1].shape[1::-1], kept)
                 self.assertTrue(src._video_buf[0][1].flags.owndata)
 
-    def test_the_scene_crop_keeps_the_same_pixels_after_the_trim(self):
-        rng = np.random.default_rng(7)
-        for w, h in (
-            (641, 401),
-            (401, 641),
-            (1920, 1080),
-            (712, 400),
-            (64, 40),
-            (3, 997),
-            (997, 3),
+    def test_each_aspect_mode_buffers_the_picture_it_shows(self):
+        # 16:9 onto a 4:3 screen: hybrid keeps the broadcast 14:9.
+        for mode, kept in (
+            ("crop", 4 / 3),
+            ("hybrid", 14 / 9),
+            ("fit", 16 / 9),
+            ("stretch", 16 / 9),
         ):
-            with self.subTest(size=(w, h)):
-                img = rng.integers(0, 256, (h, w, 3), dtype=np.uint8)
-                for aspect in (1.2, 4 / 3, 1.5, SQUARE):
-                    np.testing.assert_array_equal(
-                        crop_to_aspect(video_mod._trim_to_crop(img, aspect), aspect),
-                        crop_to_aspect(img, aspect),
-                    )
+            with self.subTest(mode=mode):
+                src, _ = self._run(
+                    decode_target=DecodeTarget(320, 200, 4 / 3, mode), src_w=1920, src_h=1080
+                )
+                h, w = src._video_buf[0][1].shape[:2]
+                self.assertAlmostEqual(w / h, kept, delta=0.01)
+
+    def test_the_shot_tracker_sees_the_buffered_picture(self):
+        src = _make_demux_source_stub(
+            [_FakePacket([_FakeFrame(0, width=1920, height=1080)])],
+            decode_target=DecodeTarget(320, 200, 4 / 3, "hybrid"),
+        )
+        src.shot_tracker = mock.MagicMock()
+        src.shot_tracker.observe.return_value = None
+        _demux_until_parked(src)
+        observed = src.shot_tracker.observe.call_args.args[1]
+        self.assertIs(observed, src._video_buf[0][1])
+
+    def test_a_padding_mode_plans_for_the_padded_screen(self):
+        # Letterboxed onto a 4:3 screen, a 16:9 picture fills the width only,
+        # so the height it needs is the screen's less the bars.
+        plan = _plan_decode_size(3840, 2160, DecodeTarget(320, 200, 4 / 3, "fit"))
+        assert plan is not None
+        self.assertEqual(plan[0], 640)
+
+    def test_a_padding_mode_plans_a_pillarboxed_picture_for_the_padded_screen(self):
+        # Pillarboxed onto a 4:3 screen, a 9:16 picture fills the height only,
+        # and the screen it fills is 640 wide at 480 tall.
+        plan = _plan_decode_size(2160, 3840, DecodeTarget(320, 200, 4 / 3, "fit"))
+        assert plan is not None
+        self.assertEqual(plan[1], 480)
 
 
 class CurrentFrameTelemetryTest(unittest.TestCase):
@@ -3450,14 +3467,35 @@ class ScanVideoSamplesTest(unittest.TestCase):
         stream = SimpleNamespace(frames=len(frames))
         packets = [SimpleNamespace(stream=stream, decode=lambda f=f: [f]) for f in frames]
         container = SimpleNamespace(demux=lambda: iter(packets))
-        shapes: list[tuple[int, int]] = []
-        acc = SimpleNamespace(add=lambda img: shapes.append(img.shape[1::-1]))
+        acc = SimpleNamespace(add=lambda img: None)
         video_mod._decode_sample_frames(
             container, "clip.mp4", stream, [acc], 2, DecodeTarget(320, 200, SQUARE)
         )
-        self.assertEqual(
-            shapes, [(64, 40), _plan_decode_size(3840, 2160, DecodeTarget(320, 200, SQUARE))]
+        planned = _plan_decode_size(3840, 2160, DecodeTarget(320, 200, SQUARE))
+        assert planned is not None
+        self.assertEqual(frames[0].reformat_calls, [])
+        self.assertEqual(frames[1].reformat_calls, [(*planned, "bgr24")])
+
+    def test_seek_samples_see_the_picture_the_aspect_mode_keeps(self):
+        path = self._make()
+        for mode, shape in (("crop", (40, 64)), ("hybrid", (49, 64)), ("fit", (64, 64))):
+            with self.subTest(mode=mode):
+                shapes: list[tuple[int, int]] = []
+                acc = SimpleNamespace(add=lambda img, seen=shapes: seen.append(img.shape[:2]))
+                target = DecodeTarget(320, 200, SQUARE, mode)
+                self.assertTrue(scan_video_samples(path, [acc], 3, decode_target=target))
+                self.assertEqual(set(shapes), {shape})
+
+    def test_sequential_samples_see_the_picture_the_aspect_mode_keeps(self):
+        stream = SimpleNamespace(frames=1)
+        packets = [SimpleNamespace(stream=stream, decode=lambda: [_FakeFrame(0, 64, 64)])]
+        container = SimpleNamespace(demux=lambda: iter(packets))
+        shapes: list[tuple[int, int]] = []
+        acc = SimpleNamespace(add=lambda img: shapes.append(img.shape[:2]))
+        video_mod._decode_sample_frames(
+            container, "clip.mp4", stream, [acc], 1, DecodeTarget(320, 200, SQUARE)
         )
+        self.assertEqual(shapes, [(40, 64)])
 
     def test_sequential_sampling_spans_the_whole_clip(self):
         # 239 frames over a 120-sample budget: a stride of 1 spends the whole
@@ -4997,7 +5035,6 @@ class FollowDrainTest(unittest.TestCase):
         with (
             mock.patch.object(scenes, "time", FrozenClock(1000.0, "time", monotonic=777.0)),
             mock.patch.object(scenes, "_render_with_overlays"),
-            mock.patch.object(scenes, "crop_to_aspect", side_effect=lambda img, _aspect: img),
             mock.patch.object(
                 scene, "_follow_drain", side_effect=lambda clock_s, now: asked.append(now)
             ),
@@ -5255,7 +5292,6 @@ class VideoSceneAudioHoldTest(unittest.TestCase):
             mock.patch.object(
                 scenes, "_render_with_overlays", side_effect=lambda *a: events.append("render")
             ),
-            mock.patch.object(scenes, "crop_to_aspect", side_effect=lambda img, _aspect: img),
             mock.patch.object(scenes.time, "monotonic", return_value=now),
         ):
             scene.process_frame(0.0)
@@ -5476,7 +5512,7 @@ class SourceShotMarkTest(unittest.TestCase):
         # Decoded ahead past a cut, as a full buffer or a muted pause leaves
         # it: the landing matches what is on screen, not the last decode.
         src = _make_demux_source_stub([])
-        src.shot_tracker = ShotTracker(lambda frame: frame, fit_frames=4)
+        src.shot_tracker = ShotTracker(fit_frames=4)
         dark = np.full((120, 160, 3), 40, dtype=np.uint8)
         bright = np.full((120, 160, 3), 220, dtype=np.uint8)
         for i, frame in enumerate([dark] * 20 + [bright] * 10):
@@ -5496,6 +5532,32 @@ class SourceShotMarkTest(unittest.TestCase):
         src.request_seek(5.0)
         self.assertEqual(src._shot_marks, {})
         self.assertIsNone(src.take_shot())
+
+
+class VideoSceneLetterboxStatsTest(unittest.TestCase):
+    """The letterbox bars reach the image the display mode quantizes, and not
+    the online fit that reads the picture's black point and saturation."""
+
+    PICTURE = _ramp(60, 160)
+
+    def test_the_online_fit_reads_the_picture_and_the_render_gets_the_bars(self):
+        for aspect_mode in ("fit", "hybrid"):
+            with self.subTest(aspect_mode=aspect_mode):
+                source = _StubSource()
+                source._frame = self.PICTURE
+                scene = _make_video_scene_stub(source)
+                cast(mock.MagicMock, scene.api).delivery_epoch = 0
+                scene.aspect_mode = aspect_mode
+                scene._aspect = 1.2
+                scene._online_fit = ColorFitAccumulator(strength=1.0)
+                with mock.patch.object(scenes, "_render_with_overlays") as render:
+                    scene.process_frame(0.0)
+                shown = render.call_args.args[2]
+                self.assertAlmostEqual(shown.shape[1] / shown.shape[0], 1.2, places=2)
+                self.assertTrue((shown[0] == 0).all())
+                expected = ColorFitAccumulator(strength=1.0)
+                expected.add(self.PICTURE)
+                self.assertEqual(scene._online_fit.result(), expected.result())
 
 
 class VideoSceneShotSetupTest(unittest.TestCase):
@@ -5520,12 +5582,6 @@ class VideoSceneShotSetupTest(unittest.TestCase):
         tracker, refits = self._attached()
         self.assertIsInstance(tracker, ShotTracker)
         self.assertTrue(refits)
-
-    def test_the_tracker_fits_the_crop_the_render_shows(self):
-        tracker, _ = self._attached()
-        assert isinstance(tracker, ShotTracker)
-        frame: np.ndarray = np.zeros((720, 1280, 3), dtype=np.uint8)
-        self.assertEqual(tracker._prepare(frame).shape[:2], (720, 864))
 
     def test_auto_fit_shots_off_attaches_no_tracker(self):
         self.assertEqual(self._attached(auto_fit_shots=False), (None, False))
@@ -5563,7 +5619,6 @@ class VideoSceneShotFitTest(unittest.TestCase):
         mode = cast(mock.MagicMock, scene.display_mode)
         with (
             mock.patch.object(scenes, "_render_with_overlays"),
-            mock.patch.object(scenes, "crop_to_aspect", side_effect=lambda img, _aspect: img),
         ):
             for _ in range(n):
                 scene._last_rendered_img = None

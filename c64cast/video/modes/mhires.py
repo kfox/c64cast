@@ -81,6 +81,26 @@ _SHARPEN_EDGE_LEVELS = (30.0, 90.0)
 _SHARPEN_SIGMA = 1.0
 _LUMA_BGR = np.array([0.114, 0.587, 0.299], dtype=np.float32)
 
+# flat_stickiness's edge gate, in Sobel magnitude of the blurred luma: full
+# stickiness below the first, none above the second. Ungated, a stickier
+# hysteresis (a higher motion_smoothing) turned grain into slow, blotchy blobs.
+_FLAT_EDGE_LEVELS = (15.0, 45.0)
+_FLAT_SIGMA = 2.0
+_FLAT_STICKINESS_GAIN = 3.0
+
+
+def _flatness(img: np.ndarray) -> np.ndarray:
+    """(h, w) weight of how flat the shaped frame is around each pixel: 1 on a
+    flat area, 0 on an edge."""
+    luma = cv2.GaussianBlur(img @ _LUMA_BGR, (0, 0), _FLAT_SIGMA)
+    edge = np.hypot(
+        cv2.Sobel(luma, cv2.CV_32F, 1, 0, ksize=3),
+        cv2.Sobel(luma, cv2.CV_32F, 0, 1, ksize=3),
+    )
+    edge = cv2.GaussianBlur(edge, (0, 0), _FLAT_SIGMA)
+    lo, hi = _FLAT_EDGE_LEVELS
+    return 1.0 - np.clip((edge - lo) / (hi - lo), 0.0, 1.0)
+
 
 def _solid_last(top3: np.ndarray, table: BlendTable) -> np.ndarray:
     """Reorder each cell's 3 picks so slot c3 holds a real palette color.
@@ -201,8 +221,9 @@ class MultiHiresDisplayMode(BitmapDisplayMode):
         input_smoothing: float = 0.0,
         sharpen: float = 0.0,
         auto_fit_strength: float = 1.0,
-        auto_fit_white_level: float = 255.0,
+        auto_fit_white_level: float | None = None,
         gray_penalty: float = DEFAULT_GRAY_PENALTY,
+        flat_stickiness: bool = True,
         flicker_tolerance: str = DEFAULT_TOLERANCE,
         flicker_max_luma_delta: float = 0.075,
         flicker_score_pairs: Sequence[str] | None = None,
@@ -210,8 +231,10 @@ class MultiHiresDisplayMode(BitmapDisplayMode):
         validate_palette_mode(palette_mode)
         validate_cell_strategy(cell_strategy)
         self._auto_fit_strength = float(min(1.0, max(0.0, auto_fit_strength)))
-        self._auto_fit_white_level = float(auto_fit_white_level)
+        if auto_fit_white_level is not None:
+            self._auto_fit_white_level = float(auto_fit_white_level)
         self._gray_penalty_strength = float(gray_penalty)
+        self._flat_stickiness = bool(flat_stickiness)
         # An 8×8 glyph already spans 2 of the mode's 4px cells (a 20-col text
         # grid); this also stretches it to 16 px tall, for a 12-row grid.
         self.text_double_height = bool(text_double_height)
@@ -583,6 +606,7 @@ class MultiHiresDisplayMode(BitmapDisplayMode):
             self._reset_pick_state()
             self._blending = table is not None
         entries = C64_PALETTE_BGR if table is None else table.bgr
+        stickiness: np.ndarray | None = None
         if forced:
             # The remap already chose each color, so the shaping stages and the
             # gray penalty are skipped.
@@ -590,7 +614,10 @@ class MultiHiresDisplayMode(BitmapDisplayMode):
             flat = self._color_map.apply(img).reshape(-1, 3).astype(np.float32)
             distances = quantize_distances
         else:
-            flat = self.quantizer_input(img).reshape(-1, 3)
+            shaped = self.quantizer_input(img)
+            if self._flat_stickiness and self.palette_mode == "percell":
+                stickiness = 1.0 + _FLAT_STICKINESS_GAIN * _flatness(shaped)
+            flat = shaped.reshape(-1, 3)
             if self._input_smoothing > 0.0:
                 flat = self._smooth_still_input(flat)
             if self._sharpen > 0.0:
@@ -606,7 +633,7 @@ class MultiHiresDisplayMode(BitmapDisplayMode):
         if self.palette_mode == "percell":
             release = base.hysteresis_release_gaps(distances(entries.astype(np.float32)))
             bitmap_ram, screen_ram, color_ram, bg0, screen_b = self._compose_percell(
-                d, flat, table, release
+                d, flat, table, release, stickiness
             )
         else:
             bitmap_ram, screen_ram, color_ram, bg0 = self._compose_global(d)
@@ -729,7 +756,10 @@ class MultiHiresDisplayMode(BitmapDisplayMode):
 
     @staticmethod
     def _capped(
-        bonus: float, release: np.ndarray | None, held: np.ndarray, best: np.ndarray
+        bonus: float | np.ndarray,
+        release: np.ndarray | None,
+        held: np.ndarray,
+        best: np.ndarray,
     ) -> float | np.ndarray:
         return bonus if release is None else np.minimum(bonus, release[held, best])
 
@@ -739,6 +769,7 @@ class MultiHiresDisplayMode(BitmapDisplayMode):
         flat: np.ndarray,
         table: BlendTable | None = None,
         release: np.ndarray | None = None,
+        stickiness: np.ndarray | None = None,
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray, int, np.ndarray | None]:
         """Per-cell path: pick bg0 globally, then for each 4×8 cell pick
         its own top-3 non-bg0 colors by population. Each pixel resolves
@@ -753,7 +784,9 @@ class MultiHiresDisplayMode(BitmapDisplayMode):
         bg0's pick and the final slot split care which entries are pairs.
         `screen_b` is the second screen page, or None when not blending.
         `release` is base.hysteresis_release_gaps over those entries; without
-        it the two hysteresis margins are uncapped.
+        it the two hysteresis margins are uncapped. `stickiness` is the
+        (200, 160) factor [color].flat_stickiness scales both margins by before
+        that cap, or None to leave them unscaled.
 
         Both the global bg0 pick and the per-cell top-3 picks go through
         EMA-smoothed counts (base.PALETTE_PICK_EMA_ALPHA for bg0,
@@ -764,6 +797,13 @@ class MultiHiresDisplayMode(BitmapDisplayMode):
         screen + color RAM and remapping each affected cell's bitmap codes."""
         n_entries = d.shape[1]
         quantized = np.argmin(d, axis=1)  # (32000,) entry idx
+        quant_bonus: float | np.ndarray = self._quant_hysteresis
+        code_bonus: float | np.ndarray = self._code_hysteresis
+        if stickiness is not None:
+            quant_bonus = quant_bonus * stickiness.ravel()
+            code_bonus = code_bonus * stickiness.reshape(25, 8, 40, 4).transpose(
+                0, 2, 1, 3
+            ).reshape(1000, 32)
 
         # Keep the previous frame's palette index while it stays within
         # base.PERCELL_QUANT_HYSTERESIS_BONUS of the new minimum distance.
@@ -771,7 +811,7 @@ class MultiHiresDisplayMode(BitmapDisplayMode):
             idx = np.arange(quantized.size)
             d_last = d[idx, self._last_quantized]
             d_min = d[idx, quantized]
-            margin = self._capped(self._quant_hysteresis, release, self._last_quantized, quantized)
+            margin = self._capped(quant_bonus, release, self._last_quantized, quantized)
             keep = (d_last - d_min) <= margin
             quantized = np.where(keep, self._last_quantized, quantized)
         self._last_quantized = quantized
@@ -888,7 +928,7 @@ class MultiHiresDisplayMode(BitmapDisplayMode):
                         ..., 0
                     ]
                     margin = self._capped(
-                        self._code_hysteresis,
+                        code_bonus,
                         release,
                         np.take_along_axis(cand, last.astype(np.intp), axis=1),
                         np.take_along_axis(cand, codes.astype(np.intp), axis=1),

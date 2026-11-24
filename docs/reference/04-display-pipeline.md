@@ -29,8 +29,11 @@ assembles one from arriving packets.
 pixels, but a C64 pixel is not square, so the screen is seen at 1.2:1 on an
 NTSC set, 4:3 from an NTSC Ultimate 64's HDMI output, and 1.5:1 in PAL.
 `[hardware].pixel_aspect` says which one you are watching. `crop` center-crops to fill and
-loses the margins; `fit` letterboxes onto black; `stretch` distorts. Camera
-and video always crop. A slideshow chooses with `aspect_mode`.
+loses the margins; `fit` letterboxes onto black; `hybrid` crops halfway
+between the source's shape and the screen's and letterboxes the rest;
+`stretch` distorts. A camera always crops. A video or a slideshow chooses with
+`aspect_mode`, and fits unless told otherwise. The black bars are added after the color statistics are read,
+so they never darken the picture's fitted levels.
 
 **3. The effect chain runs.** Each layer transforms the frame in order, at
 source resolution, before anything about the Commodore has been decided. This
@@ -47,6 +50,13 @@ and throwing the pixels away.
 `channel_boost` applies a fixed per-channel gain, `hue_corrections` moves
 chosen hue bands, and `auto_fit` stretches contrast and saturation to fill the
 palette's gamut using statistics gathered from the source itself.
+Left unset, the gain lifts blue and green by `[1.3, 1.2, 1.0]` on every
+mode, but the stretch differs: `mcm` and `mhires` put the brightest
+highlights at luma 220 (`auto_fit_white_level`), so a lit wall keeps some
+headroom below white, while `petscii` stretches to 255, because it draws
+brightness as glyph coverage and dimming only thins the glyphs. All three
+share one built-in hue band, which lifts bright gold and amber onto yellow
+or orange.
 
 **6. A forced palette is applied, if one is in force.** This is a lookup
 table, and it short-circuits the next stage: those pixels are already exact
@@ -439,6 +449,21 @@ cut, structure from the previous shot lingers for a moment as an after-image.
 
 Lower it if after-images bother you; raise it if motion shimmers. It affects
 nothing outside `mhires` with `palette_mode = "percell"`.
+
+### `flat_stickiness`
+
+The bias that keeps a pixel on last frame's color is the same everywhere, but
+it is needed most where the picture is flat: grain on a wall or a sky that sits
+between two palette colors churns into pools of shifting color, while an edge
+has to follow motion. `[color].flat_stickiness`, on by default, holds a pixel
+up to four times as firmly on a flat area as on an edge, judged from the
+picture's brightness edges. A pixel still moves once the source sits on a new
+palette color. The price is a slow fade across a flat area, which can trail
+the source for a second or two.
+
+It scales the bias `motion_smoothing` sets, so it does nothing at
+`motion_smoothing = 0`, and like that dial it affects only `mhires` with
+`palette_mode = "percell"`. Set it to `false` to hold every pixel equally.
 
 ### `input_smoothing`
 
