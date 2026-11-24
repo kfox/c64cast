@@ -1,9 +1,9 @@
 """Tests for `.claude/hooks/require-edits-in-a-worktree.py` — the PreToolUse
 hook that refuses an edit landing in the repository's primary checkout.
 
-The decision is `deny`. The cases that matter are the ones where the hook has to work
-out which tree a path belongs to: a session inside a worktree reaching back
-into the shared tree, and a path outside the repository entirely.
+The cases that matter are the ones where the hook has to work out which tree a
+path belongs to: a session inside a worktree reaching back into the shared
+tree, and a path outside the repository entirely.
 
 The hook is loaded by path: `.claude/hooks/` is not a package, and the filename
 is not an identifier.
