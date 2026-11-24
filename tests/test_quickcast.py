@@ -24,10 +24,11 @@ from unittest import mock
 
 from _fakes import MachineSettingsIsolation
 
-from c64cast.app import quickcast
+from c64cast.app import quickcast, scene_factory
 from c64cast.app.cli import _resolve_configs, build_parser
-from c64cast.app.config import CLI_TO_CFG
+from c64cast.app.config import CLI_TO_CFG, scene_color
 from c64cast.app.scene_factory import resolve_file_spec
+from c64cast.video.palette import wants_hardware_palette
 
 # Quick playback inherits the machine-settings layer (quickcast.build_config),
 # so isolate the module from any real ~/.config/c64cast/settings.toml.
@@ -330,6 +331,30 @@ class BuildConfigTest(unittest.TestCase):
                 cfg = quickcast.build_config(_parse(["a.mp4"]))
         self.assertEqual(cfg.ultimate64.url, "http://machine.lan")
         self.assertEqual(cfg.video.device, 5)
+
+    def _with_settings(self, text: str):
+        with tempfile.TemporaryDirectory() as tmp:
+            settings = os.path.join(tmp, "settings.toml")
+            with open(settings, "w", encoding="utf-8") as f:
+                f.write(text)
+            with mock.patch.dict(os.environ, {"C64CAST_SETTINGS": settings}):
+                return quickcast.build_config(_parse(["a.mp4"]))
+
+    def test_a_video_pushes_its_own_colors_shot_by_shot_by_default(self):
+        cfg = self._with_settings("")
+        color = scene_color(cfg, cfg.scenes[0])
+        self.assertEqual(color.hardware_palette, "auto")
+        self.assertTrue(color.hardware_palette_shots)
+        self.assertTrue(wants_hardware_palette(color))
+
+    def test_a_saved_color_choice_wins_over_that_default(self):
+        cfg = self._with_settings('[color]\nhardware_palette = "off"\n')
+        self.assertFalse(wants_hardware_palette(scene_color(cfg, cfg.scenes[0])))
+
+    def test_a_saved_flicker_tolerance_turns_the_default_off_instead_of_failing(self):
+        cfg = self._with_settings('[color]\nflicker_tolerance = "subtle"\n')
+        scene_factory.validate_hardware_palette_cfg(cfg)
+        self.assertFalse(wants_hardware_palette(scene_color(cfg, cfg.scenes[0])))
 
     def test_cli_url_wins_over_machine_settings(self):
         # An explicit -u overrides the machine-settings connection.

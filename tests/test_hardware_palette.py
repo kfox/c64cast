@@ -566,6 +566,65 @@ class ProvisionTest(unittest.TestCase):
         )
 
 
+class AutoTest(unittest.TestCase):
+    """ "auto" is a default nobody asked for: it never warns or refuses."""
+
+    def setUp(self):
+        patcher = mock.patch("c64cast.hw.hw_provision.read_active_palette")
+        self.read = patcher.start()
+        self.addCleanup(patcher.stop)
+        self.read.return_value = tuple(map(tuple, MACHINE))
+
+    def _cfg(self, *scenes: SceneCfg) -> Config:
+        cfg = Config()
+        cfg.color.hardware_palette = "auto"
+        cfg.scenes = list(scenes)
+        return cfg
+
+    def _assert_quiet_skip(self, api, cfg, reason: str) -> None:
+        with self.assertLogs("c64cast.hw.hardware_palette", level="INFO") as logs:
+            self.assertIsNone(hp.provision_hardware_palette(api, cfg, is_ensemble=False))
+        self.assertEqual([r.levelname for r in logs.records], ["INFO"])
+        self.assertIn(reason, logs.output[0])
+
+    def test_pushes_where_it_can(self):
+        with self.assertLogs("c64cast.hw.hardware_palette", level="INFO"):
+            control = hp.provision_hardware_palette(
+                _u64(), self._cfg(SceneCfg(type="video")), is_ensemble=False
+            )
+        self.assertIsNotNone(control)
+
+    def test_another_machine_is_an_info_line(self):
+        self._assert_quiet_skip(object(), self._cfg(SceneCfg(type="video")), "Ultimate 64")
+
+    def test_firmware_without_the_command_is_an_info_line(self):
+        self.read.return_value = None
+        self._assert_quiet_skip(_u64(), self._cfg(SceneCfg(type="video")), "did not answer")
+
+    def test_a_named_source_scene_still_gets_the_warning(self):
+        cfg = self._cfg(
+            SceneCfg(type="video"), SceneCfg(type="slideshow", color={"hardware_palette": "source"})
+        )
+        with self.assertLogs("c64cast.hw.hardware_palette", level="WARNING"):
+            hp.provision_hardware_palette(object(), cfg, is_ensemble=False)
+
+    def test_scene_types_that_cannot_push_go_unmentioned(self):
+        with self.assertNoLogs("c64cast.hw.hardware_palette", level="INFO"):
+            self.assertIsNone(
+                hp.provision_hardware_palette(
+                    _u64(), self._cfg(SceneCfg(type="waveform")), is_ensemble=False
+                )
+            )
+
+    def test_yields_to_force_palette_and_flicker_tolerance(self):
+        for field, value in (("force_palette", True), ("flicker_tolerance", "subtle")):
+            with self.subTest(field):
+                cfg = self._cfg(SceneCfg(type="video"))
+                setattr(cfg.color, field, value)
+                scene_factory.validate_hardware_palette_cfg(cfg)
+                self.assertEqual(hp.wanting_scene_types(cfg), [])
+
+
 class ConfigRefusalTest(unittest.TestCase):
     def test_a_bad_value_is_refused(self):
         cfg = Config()
@@ -721,6 +780,21 @@ class SlideshowPushTest(unittest.TestCase):
         self.control.release.assert_not_called()
         self.assertFalse(self.scene.pushes_hardware_palette)
 
+    def test_auto_pushes_as_source_does(self):
+        self.scene._color.hardware_palette = "auto"
+        self.assertTrue(self.scene.pushes_hardware_palette)
+        self.scene.setup()
+        self.addCleanup(self.scene.teardown)
+        self.control.show.assert_called_once()
+
+    def test_auto_beside_flicker_tolerance_never_touches_the_pusher(self):
+        self.scene._color.hardware_palette = "auto"
+        self.scene._color.flicker_tolerance = "subtle"
+        self.scene.setup()
+        self.scene.teardown()
+        self.control.show.assert_not_called()
+        self.assertFalse(self.scene.pushes_hardware_palette)
+
 
 class PushSourcePaletteTest(unittest.TestCase):
     def test_a_source_with_no_pixels_puts_the_machines_palette_back(self):
@@ -792,6 +866,13 @@ class VideoPushTest(unittest.TestCase):
         self.scene.teardown()
         self.control.release.assert_called_once()
         self.control.show_machine.assert_not_called()
+
+    def test_auto_pre_scans_and_pushes_as_source_does(self):
+        self.scene._color.hardware_palette = "auto"
+        self.assertTrue(self.scene.pushes_hardware_palette)
+        self.scene.setup()
+        self.assertIsNotNone(self.prescan.call_args.kwargs["frames"])
+        self.control.show.assert_called_once()
 
     def test_setting_the_same_video_up_again_does_not_pre_scan_again(self):
         self.assertTrue(self.scene.pushes_hardware_palette)

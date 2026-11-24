@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
-from c64cast.app.config import Config, scene_and_clip_cfgs, scene_color
+from c64cast.app.config import ColorCfg, Config, scene_and_clip_cfgs, scene_color
 from c64cast.hw import uci
 
 if TYPE_CHECKING:
@@ -419,21 +419,33 @@ def settle_for(api: object, scene: object) -> None:
     control.show_machine()
 
 
-def wanting_scene_types(cfg: Config) -> list[str]:
-    """The type of every scene and clip that can push a palette and whose
-    effective `[color]` asks for one. Scenes that ask but cannot are named in
-    an info line."""
-    from c64cast.video.palette import HARDWARE_PALETTE_SCENE_TYPES
-
+def _scene_colors(cfg: Config) -> list[tuple[str, ColorCfg]]:
     out = []
     for _, s in scene_and_clip_cfgs(cfg):
         try:
-            wants = scene_color(cfg, s).hardware_palette == "source"
+            out.append((s.type, scene_color(cfg, s)))
         except ValueError:
             continue
-        if wants:
-            out.append(s.type)
-    unsupported = sorted({t for t in out if t not in HARDWARE_PALETTE_SCENE_TYPES})
+    return out
+
+
+def asks_for_source(cfg: Config) -> bool:
+    """Whether some scene names hardware_palette = "source" itself, rather
+    than "auto", so a palette it cannot get is worth a warning."""
+    return any(c.hardware_palette == "source" for _, c in _scene_colors(cfg))
+
+
+def wanting_scene_types(cfg: Config) -> list[str]:
+    """The type of every scene and clip that can push a palette and whose
+    effective `[color]` asks for one. Scenes that name "source" but cannot
+    push are named in an info line."""
+    from c64cast.video.palette import HARDWARE_PALETTE_SCENE_TYPES, wants_hardware_palette
+
+    colors = _scene_colors(cfg)
+    out = [t for t, c in colors if wants_hardware_palette(c)]
+    unsupported = sorted(
+        {t for t, c in colors if c.hardware_palette == "source"} - set(HARDWARE_PALETTE_SCENE_TYPES)
+    )
     if unsupported:
         log.info(
             "hardware_palette = source applies to video and slideshow scenes; "
@@ -467,8 +479,9 @@ def provision_hardware_palette(
         skip = "--skip-probe forbids reading the machine's palette first"
     elif is_ensemble:
         skip = "an ensemble shares one color pipeline across machines"
+    level = logging.WARNING if asks_for_source(cfg) else logging.INFO
     if skip is not None:
-        log.warning("hardware_palette = source: %s — skipped.", skip)
+        log.log(level, "hardware_palette: %s — skipped.", skip)
         return None
     assert isinstance(api, Ultimate64API)
 
@@ -478,11 +491,12 @@ def provision_hardware_palette(
         if machine is not None:
             break
     if machine is None:
-        log.warning(
-            "hardware_palette = source: this Ultimate did not answer the UCI "
+        log.log(
+            level,
+            "hardware_palette: this Ultimate did not answer the UCI "
             "palette read (firmware before 3.15a, a C64 Ultimate on 1.1.0, or "
             "the Command Interface turned off) — not pushing palettes; colors "
-            "are matched against [hardware].host_palette as before."
+            "are matched against [hardware].host_palette as before.",
         )
         return None
 

@@ -402,7 +402,7 @@ newer, lets c64cast change the sixteen themselves, for the length of a scene:
 
 ```toml
 [color]
-hardware_palette = "source"     # "off" (default) | "source"
+hardware_palette = "source"   # "off" (default) | "auto"
 ```
 
 With `"source"`, a `video` or `slideshow` scene fits the palette to its own
@@ -427,6 +427,12 @@ error falls to about a third of what the Ultimate's own table gives.
 
 Set it per scene in a `[scenes.color]` sub-table to use it on one video and not
 the next.
+
+`"auto"` is `"source"` wherever it can be. Where `"source"` would warn (another
+machine, older firmware, an ensemble, `--skip-probe`) it logs at info instead,
+and next to `force_palette` or a `flicker_tolerance` it is off for that scene
+rather than refused. Quick playback defaults to `"auto"`, below the machine
+settings, so a `[color]` table saved there still wins.
 
 ## Motion Smoothing and Fades
 

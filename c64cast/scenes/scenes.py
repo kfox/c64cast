@@ -50,6 +50,7 @@ from c64cast.video.palette import (
     ColorMapAccumulator,
     FrameSampler,
     derive_hardware_palette,
+    wants_hardware_palette,
 )
 from c64cast.video.palette_shots import PaletteShot, PaletteShotTracker
 from c64cast.video.rolling_palette import RollingForcePalette
@@ -543,7 +544,7 @@ def _scene_hardware_palette(
 ) -> HardwarePalette | None:
     """The run's palette pusher, when this scene's `[color].hardware_palette`
     asks for one and the run could provision it."""
-    if color.hardware_palette != "source" or display_mode is None:
+    if not wants_hardware_palette(color) or display_mode is None:
         return None
     return getattr(api, "hardware_palette", None)
 

@@ -1768,7 +1768,7 @@ def hardware_palette_cfg_error(label: str, color: ColorCfg) -> str | None:
             f"{label}.hardware_palette must be one of "
             f"{', '.join(HARDWARE_PALETTE_CHOICES)}, got {color.hardware_palette!r}"
         )
-    if color.hardware_palette == "off":
+    if color.hardware_palette != "source":
         return None
     if color.force_palette:
         return (
