@@ -9,9 +9,9 @@ HEAD out from under uncommitted work. `.claude/skills/land/SKILL.md` step 1 is
 where a change is told to enter one; this is the backstop for a session that
 did not.
 
-The decision is `ask`, not `deny`. The primary checkout has edits that belong
-to it — a merge, a release, a change the user is making by hand — so the point
-is to make editing it deliberate rather than impossible.
+The decision is `deny`, not `ask`: an `ask` was approved by habit often enough
+that edits kept landing in the shared tree. The primary checkout's own edits — a
+merge, a release, a change by hand — are the user's to make, outside a session.
 
 Only the file-editing tools reach here, so a write driven through Bash — `sed
 -i`, a redirection, `tee` — does not. An existing worktree somewhere else is
@@ -35,21 +35,21 @@ SHARED = (
     "and the user share:\n"
     "  {target}\n"
 )
-APPROVE = "Approve this if the edit belongs to the primary checkout itself."
+USERS_TO_MAKE = "An edit that belongs to the primary checkout itself is the user's to make."
 
-ASK_FROM_PRIMARY = (
+DENY_FROM_PRIMARY = (
     SHARED + "A change belongs in a worktree of its own — call EnterWorktree with a "
     "`name`, then give it an environment of its own:\n"
     '  env -u VIRTUAL_ENV UV_PROJECT_ENVIRONMENT="$PWD/.venv" uv sync --all-extras\n'
     "and pass that environment to make (`make <target> "
     "UV_PROJECT_ENVIRONMENT=<worktree>/.venv`) and to git as a prefix "
-    "(`UV_PROJECT_ENVIRONMENT=<worktree>/.venv git commit ...`).\n" + APPROVE
+    "(`UV_PROJECT_ENVIRONMENT=<worktree>/.venv git commit ...`).\n" + USERS_TO_MAKE
 )
 
 # EnterWorktree refuses a `name` from a session that is already in a worktree,
 # so the way out of this one is to edit the worktree's own copy instead.
-ASK_FROM_WORKTREE = (
-    SHARED + "This session's worktree is\n  {worktree}\nMake the change there.\n" + APPROVE
+DENY_FROM_WORKTREE = (
+    SHARED + "This session's worktree is\n  {worktree}\nMake the change there.\n" + USERS_TO_MAKE
 )
 
 
@@ -133,8 +133,8 @@ def verdict(path: str, cwd: str, project_dir: str) -> str | None:
         return None
     worktree = _worktree_holding(session, working)
     if worktree is not None:
-        return ASK_FROM_WORKTREE.format(target=target, worktree=worktree)
-    return ASK_FROM_PRIMARY.format(target=target)
+        return DENY_FROM_WORKTREE.format(target=target, worktree=worktree)
+    return DENY_FROM_PRIMARY.format(target=target)
 
 
 def main() -> int:
@@ -151,7 +151,7 @@ def main() -> int:
                 {
                     "hookSpecificOutput": {
                         "hookEventName": "PreToolUse",
-                        "permissionDecision": "ask",
+                        "permissionDecision": "deny",
                         "permissionDecisionReason": reason,
                     }
                 }

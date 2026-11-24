@@ -94,7 +94,7 @@ it and a `git pull` there moves HEAD out from under uncommitted work. Two hooks
 hold the line: [`require-worktrees-in-checkout.py`](.claude/hooks/require-worktrees-in-checkout.py)
 refuses a `git worktree add` aimed anywhere else, and
 [`require-edits-in-a-worktree.py`](.claude/hooks/require-edits-in-a-worktree.py)
-asks before an edit lands in the primary checkout. The environment half is
+refuses an edit that would land in the primary checkout. The environment half is
 [`scripts/check_venv_target.py`](scripts/check_venv_target.py), which fails a
 commit whose project environment does not import the checkout it ran from. In a
 worktree, `make` takes the override as an argument (`make check
