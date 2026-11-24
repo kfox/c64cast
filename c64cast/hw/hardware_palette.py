@@ -8,6 +8,9 @@ from __future__ import annotations
 import hashlib
 import logging
 import threading
+import time
+from collections import deque
+from collections.abc import Callable
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -16,6 +19,8 @@ from c64cast.app.config import Config, scene_and_clip_cfgs, scene_color
 from c64cast.hw import uci
 
 if TYPE_CHECKING:
+    from c64cast.video.palette_shots import PaletteShot
+
     from .api import Ultimate64API
 
 log = logging.getLogger(__name__)
@@ -146,6 +151,55 @@ class HardwarePalette:
                     "back; its next reset or power-cycle will"
                 )
 
+    # The blind, split push `ShotPusher` drives at a video's shot cuts. None
+    # of these reads anything back: see `uci.load_palette`.
+
+    def load(self, table_bgr: np.ndarray, stop: Callable[[], bool]) -> bool:
+        """Load `table_bgr` for a later `go`. False when pushing is off, when
+        `stop` cut the load short, or when the link failed under it."""
+        with self._lock:
+            if not self._enabled:
+                return False
+            return self._blind(
+                "loading a shot's palette", uci.load_palette, _to_rgb(table_bgr), stop=stop
+            )
+
+    def adopt(self, table_bgr: np.ndarray) -> bool:
+        """Point the quantizer at the loaded table, for the frame that is
+        about to render; `go` then makes the machine show it. False when
+        pushing is off."""
+        table = np.asarray(table_bgr, dtype=np.uint8).reshape(16, 3)
+        with self._lock:
+            if not self._enabled:
+                return False
+            self._on_machine = table.copy()
+            if self._shown is None or not np.array_equal(table, self._shown):
+                self._shown = table.copy()
+                self._set_host(table, _table_name(table))
+            return True
+
+    def go(self) -> None:
+        with self._lock:
+            self._blind("pushing a shot's palette", uci.go)
+
+    def ack(self) -> None:
+        with self._lock:
+            self._blind("acknowledging a shot's palette", uci.ack)
+
+    def abort(self) -> None:
+        with self._lock:
+            self._blind("dropping a shot's palette", uci.abort)
+
+    def _blind(self, what: str, op: Callable[..., object], *args: object, **kwargs: object) -> bool:
+        try:
+            done = op(self._api, *args, **kwargs)
+        except Exception:
+            log.debug("hardware_palette: %s failed", what, exc_info=True)
+            self._on_machine = None
+            self._give_up(f"{what} failed")
+            return False
+        return done is not False
+
     def _machine_shows(self, table: np.ndarray) -> bool:
         return self._on_machine is not None and np.array_equal(table, self._on_machine)
 
@@ -182,6 +236,175 @@ class HardwarePalette:
         from c64cast.video.palette import set_host_palette
 
         set_host_palette(table_bgr, name=name)
+
+
+class ShotPusher:
+    """Has the machine change colors on the first frame of each `PaletteShot`.
+
+    A worker thread fits each stretch the tracker hands over (`ready`, demux
+    thread), then loads the tables one at a time, in order, ahead of their
+    first frames. The render thread calls `before_render` with the stretch
+    whose first frame is about to render, and `after_render` once that frame
+    is written: a loaded table is adopted by the quantizer before the render
+    and pushed after it, so both change on the same frame. A table not yet
+    loaded when its frame comes is pushed on the first frame after it is. The
+    worker acknowledges a push ACK_DELAY_S after it went, and only then loads
+    the next table, since the interface holds one command."""
+
+    def __init__(self, control: HardwarePalette) -> None:
+        self._control = control
+        self._cond = threading.Condition()
+        self._to_fit: deque[PaletteShot] = deque()
+        self._to_load: deque[PaletteShot] = deque()
+        self._loaded: PaletteShot | None = None
+        self._due: PaletteShot | None = None
+        self._committing: PaletteShot | None = None
+        self._went: float | None = None
+        # Stretches numbered below this were queued before a seek.
+        self._floor_seq = -1
+        self._stopping = False
+        self._thread = threading.Thread(target=self._run, name="palette-shots", daemon=True)
+
+    def start(self) -> None:
+        self._thread.start()
+
+    def stop(self) -> None:
+        """Stop the worker and drop whatever is loaded or awaiting its ack, so
+        the interface is free for the scene's own pushes."""
+        with self._cond:
+            self._stopping = True
+            self._cond.notify_all()
+        if self._thread.is_alive():
+            self._thread.join()
+        with self._cond:
+            outstanding = self._loaded is not None or self._went is not None
+            self._loaded = self._went = None
+        if outstanding:
+            self._control.abort()
+
+    def ready(self, shot: PaletteShot) -> None:
+        with self._cond:
+            if shot.starts_over:
+                self._floor_seq = shot.seq
+                self._to_fit.clear()
+                self._to_load.clear()
+            self._to_fit.append(shot)
+            self._cond.notify_all()
+
+    def wait_loaded(self, timeout_s: float) -> bool:
+        """Block until a table is loaded and waiting for its frame, so the
+        first frame of a video can show its own colors."""
+        deadline = time.monotonic() + timeout_s
+        with self._cond:
+            while self._loaded is None and not self._stopping:
+                left = deadline - time.monotonic()
+                if left <= 0:
+                    return False
+                self._cond.wait(left)
+            return self._loaded is not None
+
+    def before_render(self, shot: PaletteShot | None) -> bool:
+        """`shot` is the stretch whose first frame is about to render, if any.
+        True when this render carries a push: the caller then owes
+        `after_render`, whether or not the render succeeds."""
+        with self._cond:
+            if shot is not None:
+                self._due = shot
+                self._cond.notify_all()
+            loaded = self._loaded
+            if loaded is None or loaded is not self._due:
+                return False
+            fit = loaded.fit
+            self._loaded = self._due = None
+            self._committing = loaded
+        if fit is None or not self._control.adopt(fit[0]):
+            with self._cond:
+                self._committing = None
+            return False
+        return True
+
+    def after_render(self) -> None:
+        with self._cond:
+            if self._committing is None:
+                return
+        self._control.go()
+        with self._cond:
+            self._committing = None
+            self._went = time.monotonic()
+            self._cond.notify_all()
+
+    def _run(self) -> None:
+        while True:
+            with self._cond:
+                action = None
+                while not self._stopping and (action := self._next_action()) is None:
+                    self._cond.wait(self._wait_s())
+                if action is None:
+                    return
+            action()
+
+    def _wait_s(self) -> float | None:
+        if self._went is None:
+            return None
+        return max(0.0, self._went + uci.ACK_DELAY_S - time.monotonic())
+
+    def _superseded(self, shot: PaletteShot) -> bool:
+        due = self._due
+        return shot.seq < self._floor_seq or (due is not None and due.seq > shot.seq)
+
+    def _next_action(self) -> Callable[[], None] | None:
+        if self._to_fit:
+            return self._fit_next
+        if self._went is not None:
+            return self._ack if self._wait_s() == 0.0 else None
+        if self._loaded is not None:
+            return self._drop_loaded if self._superseded(self._loaded) else None
+        while self._to_load and self._superseded(self._to_load[0]):
+            self._to_load.popleft()
+        if self._to_load and self._committing is None:
+            return self._load_next
+        return None
+
+    def _fit_next(self) -> None:
+        from c64cast.video.palette import derive_hardware_palette, hardware_palette_error
+
+        with self._cond:
+            shot = self._to_fit.popleft()
+        table = derive_hardware_palette(shot.frames, self._control.machine_palette)
+        if table is None:
+            return
+        baseline = float(np.mean([hardware_palette_error(f, table) for f in shot.frames]))
+        shot.fitted(table, baseline)
+        shot.frames = []
+        with self._cond:
+            self._to_load.append(shot)
+
+    def _ack(self) -> None:
+        self._control.ack()
+        with self._cond:
+            self._went = None
+
+    def _drop_loaded(self) -> None:
+        self._control.abort()
+        with self._cond:
+            self._loaded = None
+
+    def _load_next(self) -> None:
+        with self._cond:
+            shot = self._to_load.popleft()
+        fit = shot.fit
+        assert fit is not None
+
+        def give_up() -> bool:
+            with self._cond:
+                return self._stopping or self._superseded(shot)
+
+        if self._control.load(fit[0], give_up):
+            with self._cond:
+                self._loaded = shot
+                self._cond.notify_all()
+        else:
+            self._control.abort()
 
 
 def settle_for(api: object, scene: object) -> None:

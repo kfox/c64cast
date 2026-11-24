@@ -4,7 +4,7 @@ generated: true
 
 # Index
 
-Every name c64cast answers to — 473 of them — and the pages that discuss each one. A configuration key appears bare, and again under its section where two sections share the name; a parameter that belongs to a generator, an effect or a display mode is filed under its own name, with the holder in parentheses. A few entries are ordinary words rather than anything the program prints, for the reader who does not yet know what it calls the thing.
+Every name c64cast answers to — 474 of them — and the pages that discuss each one. A configuration key appears bare, and again under its section where two sections share the name; a parameter that belongs to a generator, an effect or a display mode is filed under its own name, with the holder in parentheses. A few entries are ordinary words rather than anything the program prints, for the reader who does not yet know what it calls the thing.
 
 ## A
 
@@ -242,6 +242,7 @@ Every name c64cast answers to — 473 of them — and the pages that discuss eac
 | `halo` | [`generative` (B)](21-appendix-b-scene-types.md#generative), [Generators (E)](24-appendix-e-generators-effects.md#generators), [`source` (F)](25-appendix-f-live-targets.md#source) |
 | `[hardware]` | [The Extra Layer (1)](02-config-rules.md#the-extra-layer), [Near To What — `hardware.host_palette` (3)](04-display-pipeline.md#near-to-what--hardwarehost_palette), [`hardware` (A)](20-appendix-a-configuration.md#hardware) |
 | `hardware_palette` | [Choosing the Sixteen — `hardware_palette` (3)](04-display-pipeline.md#choosing-the-sixteen--hardware_palette), [What Each Firmware Can Do (5)](06-under-the-hood.md#what-each-firmware-can-do), [`color` (A)](20-appendix-a-configuration.md#color) |
+| `hardware_palette_shots` | [`color` (A)](20-appendix-a-configuration.md#color) |
 | `hdmi_scan_resolution` | [Tempo, Pitch, and the Machine's Standard (4)](05-sound-and-music.md#tempo-pitch-and-the-machines-standard), [`ultimate64` (A)](20-appendix-a-configuration.md#ultimate64) |
 | `--heartbeat` | [Debug (G)](26-appendix-g-cli-flags.md#debug) |
 | `heartbeat` | [`debug` (A)](20-appendix-a-configuration.md#debug), [Debug (G)](26-appendix-g-cli-flags.md#debug) |

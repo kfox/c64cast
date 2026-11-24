@@ -51,6 +51,7 @@ from c64cast.video.palette import (
     FrameSampler,
     derive_hardware_palette,
 )
+from c64cast.video.palette_shots import PaletteShot, PaletteShotTracker
 from c64cast.video.rolling_palette import RollingForcePalette
 from c64cast.video.shots import ShotFit, ShotTracker
 from c64cast.video.video import (
@@ -77,7 +78,7 @@ if TYPE_CHECKING:
     from c64cast.app.quickcast import ResolvedMedia
     from c64cast.app.scene_factory import DisplayWiring
     from c64cast.audio.audio_source import AudioSource
-    from c64cast.hw.hardware_palette import HardwarePalette
+    from c64cast.hw.hardware_palette import HardwarePalette, ShotPusher
 
     from .effects import FrameEffect
     from .frame_source import FrameSource
@@ -91,6 +92,9 @@ SceneAudio = AudioStreamer | UltimateAudioSampler
 # Opening frames folded into the online ColorFitAccumulator before the derived
 # fit freezes — ~2 s at 24 fps.
 ONLINE_FIT_WARMUP_FRAMES = 48
+# Decoding a video's first FIT_S seconds, fitting them and loading the table
+# take ~2 s; the first frame waits up to this long to show its own colors.
+FIRST_SHOT_PALETTE_WAIT_S = 4.0
 
 AV_LAG_LOG_INTERVAL_S = 2.0
 # Following the measured drain with the bitmap+DAC tempo compensation
@@ -1519,6 +1523,7 @@ class VideoScene(MediaFileMixin, Scene):
 
         self._color = color if color is not None else ColorCfg()
         self._hw_palette: HardwarePalette | None = None
+        self._shot_pusher: ShotPusher | None = None
         # The last hardware-palette pre-scan, so setting the same video up
         # again (a looping clip, a playlist lap) neither decodes it again nor
         # pushes colors the machine is already showing.
@@ -1684,6 +1689,8 @@ class VideoScene(MediaFileMixin, Scene):
                 self.display_mode.set_color_map(cmap)
                 if self._hw_palette is not None:
                     _push_source_palette(self, self._hw_palette, sampled)
+                    if c.hardware_palette_shots:
+                        self._start_shot_pushes(self._hw_palette)
                 if fit is not None:
                     log.info("video: auto-fit %s", fit)
                 if cmap is not None:
@@ -1762,8 +1769,24 @@ class VideoScene(MediaFileMixin, Scene):
         else:
             self.source.start(audio_push=None)
         progress.finish()
+        if self._shot_pusher is not None:
+            self._shot_pusher.wait_loaded(FIRST_SHOT_PALETTE_WAIT_S)
         self._start_clocks()
         self._hold_since = time.monotonic()
+
+    def _start_shot_pushes(self, control: HardwarePalette) -> None:
+        from c64cast.hw.hardware_palette import ShotPusher
+
+        assert self.source is not None and self.display_mode is not None
+        pusher = ShotPusher(control)
+        self.source.shot_tracker = PaletteShotTracker(
+            partial(crop_to_aspect, aspect=self._aspect),
+            self.display_mode.quantizer_input,
+            pusher.ready,
+        )
+        pusher.start()
+        self._shot_pusher = pusher
+        log.info("video: hardware palette follows the shots")
 
     def _start_reu_pump(self, audio: AudioStreamer, progress: SegmentedProgress) -> bool:
         """Pre-encode the soundtrack and stage it on the REU pump, held.
@@ -2049,8 +2072,14 @@ class VideoScene(MediaFileMixin, Scene):
         img = crop_to_aspect(img, self._aspect)
         if new_source and self._refits_at_cuts:
             shot = self.source.take_shot()
-            if shot is not None:
+            if isinstance(shot, ShotFit):
                 self._install_shot_fit(shot)
+        pushes_colors = False
+        if self._shot_pusher is not None:
+            shot = self.source.take_shot() if new_source else None
+            pushes_colors = self._shot_pusher.before_render(
+                shot if isinstance(shot, PaletteShot) else None
+            )
         # Before annotation, so the debug digits stay out of the
         # contrast/saturation stats.
         if (
@@ -2081,6 +2110,10 @@ class VideoScene(MediaFileMixin, Scene):
             # a paused one would stay unpainted until playback resumed.
             self._last_render_epoch = None
             raise
+        finally:
+            if pushes_colors:
+                assert self._shot_pusher is not None
+                self._shot_pusher.after_render()
         self.release_audio_hold()
         return True
 
@@ -2177,6 +2210,9 @@ class VideoScene(MediaFileMixin, Scene):
         if src is not None:
             steps.append(("source close", src.close))
         steps.append(("identity-skip cache reset", self._reset_identity_skip_cache))
+        pusher, self._shot_pusher = self._shot_pusher, None
+        if pusher is not None:
+            steps.append(("shot palette pushes stop", pusher.stop))
         control, self._hw_palette = self._hw_palette, None
         if control is not None:
             steps.append(("hardware palette release", control.release))

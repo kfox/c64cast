@@ -758,6 +758,11 @@
           ],
           "default": "off"
         },
+        "hardware_palette_shots": {
+          "type": "boolean",
+          "description": "With hardware_palette = 'source', give each shot of a video its own 16 colors instead of one set for the whole video: they are fitted to the shot's first two seconds while it waits in the decode buffer and change on its first frame. A new set also comes where the picture drifts away from the current one, as in a dissolve. Shots shorter than 1.3 s keep the colors of the shot before. Video scenes only.",
+          "default": true
+        },
         "dither": {
           "type": "string",
           "description": "Spatial dither applied before nearest-palette quantization on mhires/mcm/hires. 'auto' picks the best method that's actually useful for the scene: floyd-steinberg (highest quality) for static scenes (slideshow), blue_noise (vectorized, temporally stable \u2014 no added shimmer, and no Bayer grid structure) for motion scenes (video/webcam/generative). Any value can be forced on any scene; floyd-steinberg/atkinson are a Python-level per-pixel loop and can shimmer frame-to-frame on motion; 'ordered' (Bayer) is the older motion default and still available if the cross-hatch pattern is wanted (see docs/caveats.md).",
@@ -2534,6 +2539,11 @@
                   "source"
                 ],
                 "default": "off"
+              },
+              "hardware_palette_shots": {
+                "type": "boolean",
+                "description": "With hardware_palette = 'source', give each shot of a video its own 16 colors instead of one set for the whole video: they are fitted to the shot's first two seconds while it waits in the decode buffer and change on its first frame. A new set also comes where the picture drifts away from the current one, as in a dissolve. Shots shorter than 1.3 s keep the colors of the shot before. Video scenes only.",
+                "default": true
               },
               "dither": {
                 "type": "string",

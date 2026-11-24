@@ -753,7 +753,7 @@ class VideoPushTest(unittest.TestCase):
             audio=None,
             display_mode=self.mode,
             file="https://stub.invalid/clip.mp4",
-            color=ColorCfg(hardware_palette="source"),
+            color=ColorCfg(hardware_palette="source", hardware_palette_shots=False),
             setup_progress=False,
         )
         self.fit = object()
