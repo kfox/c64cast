@@ -960,10 +960,10 @@ auto_fit_shots = true
 auto_fit_shot_max_rise = 1.0
 auto_fit_shot_relax = 0.5
 # auto_fit_white_level is the luma (128..255) the fit puts the source's brightest
-# highlights at: 255 (default) stretches them to full white, and a lower level
-# leaves headroom so a pale wall or sky stays light gray or pale instead of
-# clipping to white or cyan.
-auto_fit_white_level = 255.0
+# highlights at: 255 stretches them to full white, and a lower level leaves
+# headroom so a pale wall or sky stays light gray or pale instead of clipping
+# to white or cyan. Unset = 220 on mcm and mhires, 255 on petscii.
+# auto_fit_white_level = 220.0
 #
 # gray_penalty (mhires and mcm): how much closer a chromatic palette entry must
 # be before the five grays win a pixel, in squared color distance. Higher keeps
@@ -1003,9 +1003,11 @@ force_palette_colors = 16
 # force_palette or flicker_tolerance.
 hardware_palette = "off"
 #
-# hue_corrections: none by default. Define [[color.hue_corrections]] bands to
-# push a hue range toward a palette color before quantizing.
-# hue_corrections_replace_defaults has no effect (there are no built-in bands).
+# hue_corrections: one band is built in, "gold bright", a V x1.3 lift for
+# bright, saturated gold and amber (hue 36-60 degrees, S >= 0.6, V >= 0.2) so
+# a light-cycle trail lands on yellow or orange instead of brown. Bands
+# defined as [[color.hue_corrections]] apply after it;
+# hue_corrections_replace_defaults = true drops it, so yours are the whole list.
 hue_corrections_replace_defaults = false
 # Example band (commented), a violet → magenta snap:
 #   [[color.hue_corrections]]

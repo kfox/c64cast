@@ -80,12 +80,13 @@ class MCMDisplayMode(CharDisplayMode):
         dither_strength: float = 0.5,
         perceptual: bool = False,
         auto_fit_strength: float = 1.0,
-        auto_fit_white_level: float = 255.0,
+        auto_fit_white_level: float | None = None,
         gray_penalty: float = DEFAULT_GRAY_PENALTY,
     ):
         validate_palette_mode(palette_mode)
         self._auto_fit_strength = float(min(1.0, max(0.0, auto_fit_strength)))
-        self._auto_fit_white_level = float(auto_fit_white_level)
+        if auto_fit_white_level is not None:
+            self._auto_fit_white_level = float(auto_fit_white_level)
         self._gray_penalty_strength = float(gray_penalty)
         # The forced-palette preset pairs with percell (see cycle_style); the
         # configured palette_mode still seeds the non-forced cycle stops.

@@ -388,6 +388,26 @@ class HueCorrectionTest(unittest.TestCase):
         shaped = MultiHiresDisplayMode("percell").quantizer_input(shadow).reshape(-1, 3)
         self.assertEqual(int(quantize_flat_for(shaped[:1], perceptual=True)[0]), 6)
 
+    def test_built_in_band_lifts_bright_gold_onto_yellow(self):
+        from c64cast.video.modes import MCMDisplayMode, MultiHiresDisplayMode
+
+        before = palette_mod.C64_PALETTE_BGR.copy(), palette_mod.active_host_palette_name()
+        self.addCleanup(lambda: palette_mod.set_host_palette(before[0], name=before[1]))
+        palette_mod.set_host_palette(palette_mod.U64_PALETTE_BGR, name="u64")
+        gold = np.full((8, 8, 3), (20, 150, 200), dtype=np.uint8)
+        yellow = 7
+        for cls in (MCMDisplayMode, MultiHiresDisplayMode):
+            for replace in (True, False):
+                with self.subTest(mode=cls.__name__, without_band=replace):
+                    mode = cls("percell", hue_corrections_replace=replace)
+                    shaped = mode.quantizer_input(gold).reshape(-1, 3)
+                    index = int(quantize_flat_for(shaped[:1], perceptual=True)[0])
+                    self.assertEqual(index == yellow, not replace)
+
+    def test_built_in_band_leaves_dim_gold_alone(self):
+        dim = np.array([[[5, 30, 45]]], dtype=np.uint8)
+        np.testing.assert_array_equal(apply_hue_corrections(dim, DEFAULT_HUE_CORRECTIONS), dim)
+
     def test_empty_table_is_identity(self):
         img = np.array([[[120, 30, 70], [10, 200, 200]]], dtype=np.uint8)
         out = apply_hue_corrections(img, ())
@@ -399,6 +419,14 @@ class HueCorrectionTest(unittest.TestCase):
             img = np.array([[bgr]], dtype=np.uint8)
             out = apply_hue_corrections(img, (_VIOLET_BAND,))
             np.testing.assert_array_equal(out, img)
+
+    def test_built_in_band_leaves_every_pixel_outside_it_byte_exact(self):
+        gold = (20, 150, 200)
+        off_band = (40, 90, 37)
+        img = np.array([[gold, off_band]], dtype=np.uint8)
+        out = apply_hue_corrections(img, DEFAULT_HUE_CORRECTIONS)
+        self.assertGreater(int(out[0, 0].astype(int).sum()), int(img[0, 0].astype(int).sum()))
+        np.testing.assert_array_equal(out[0, 1], img[0, 1])
 
     def test_parse_validates_and_roundtrips(self):
         hc = parse_hue_corrections(

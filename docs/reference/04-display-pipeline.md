@@ -50,6 +50,13 @@ and throwing the pixels away.
 `channel_boost` applies a fixed per-channel gain, `hue_corrections` moves
 chosen hue bands, and `auto_fit` stretches contrast and saturation to fill the
 palette's gamut using statistics gathered from the source itself.
+Left unset, the gain lifts blue and green by `[1.3, 1.2, 1.0]` on every
+mode, but the stretch differs: `mcm` and `mhires` put the brightest
+highlights at luma 220 (`auto_fit_white_level`), so a lit wall keeps some
+headroom below white, while `petscii` stretches to 255, because it draws
+brightness as glyph coverage and dimming only thins the glyphs. All three
+share one built-in hue band, which lifts bright gold and amber onto yellow
+or orange.
 
 **6. A forced palette is applied, if one is in force.** This is a lookup
 table, and it short-circuits the next stage: those pixels are already exact

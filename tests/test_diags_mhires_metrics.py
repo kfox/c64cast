@@ -161,7 +161,9 @@ class OfflineRendererTest(unittest.TestCase):
         from c64cast.app.config import ColorCfg
         from scripts.diags._offline_video import OfflineMhires
 
-        renderer = OfflineMhires(color=ColorCfg(flicker_tolerance="subtle"))
+        renderer = OfflineMhires(
+            color=ColorCfg(flicker_tolerance="subtle", auto_fit_white_level=255.0)
+        )
         gray = np.tile(np.array([200, 200, 200], np.uint8), (400, 640, 1))
         for i in range(3):
             renderer.show(gray, i / 25)

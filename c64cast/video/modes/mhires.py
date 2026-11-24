@@ -201,7 +201,7 @@ class MultiHiresDisplayMode(BitmapDisplayMode):
         input_smoothing: float = 0.0,
         sharpen: float = 0.0,
         auto_fit_strength: float = 1.0,
-        auto_fit_white_level: float = 255.0,
+        auto_fit_white_level: float | None = None,
         gray_penalty: float = DEFAULT_GRAY_PENALTY,
         flicker_tolerance: str = DEFAULT_TOLERANCE,
         flicker_max_luma_delta: float = 0.075,
@@ -210,7 +210,8 @@ class MultiHiresDisplayMode(BitmapDisplayMode):
         validate_palette_mode(palette_mode)
         validate_cell_strategy(cell_strategy)
         self._auto_fit_strength = float(min(1.0, max(0.0, auto_fit_strength)))
-        self._auto_fit_white_level = float(auto_fit_white_level)
+        if auto_fit_white_level is not None:
+            self._auto_fit_white_level = float(auto_fit_white_level)
         self._gray_penalty_strength = float(gray_penalty)
         # An 8×8 glyph already spans 2 of the mode's 4px cells (a 20-col text
         # grid); this also stretches it to 16 px tall, for a 12-row grid.

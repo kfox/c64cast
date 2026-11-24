@@ -104,7 +104,7 @@ The online fit converges on a video's first `ONLINE_FIT_WARMUP_FRAMES` frames. H
 
 **Why halfway.** On Ultimate 64 A/Bs of a dark-arena film and a commercial, the shot's own fit (relax 1) won on mid-tone subjects, but the opening's strong stretch (relax 0) won on thin bright lines and faces over near-black, and washed out shots that were already bright. `auto_fit_shot_relax` = 0.5 moves the held fit halfway from the opening's (`ColorFit.toward`), and read as the better compromise on the same hardware. It is applied after `held_to`, so the cap still bounds what a shot can strengthen.
 
-**Headroom.** The fit maps the source's 99th luma percentile to 255, so on a bright shot everything above it, and much just below it, lands on white or cyan: a lit wall goes flat. `[color].auto_fit_white_level` puts that percentile at a lower luma instead (`ColorFit.with_white_level`, which scales the gain about the black point and never pushes the white point past 255). The display mode applies it in `_fit_for_apply`, before the live `auto_fit_strength`, so it reaches the pre-scanned, online and shot fits alike, and a fit that does not stretch the highlights is left as it is. It ships at 255, unchanged, so a hardware A/B can judge a lower level before it becomes the default.
+**Headroom.** The fit maps the source's 99th luma percentile to 255, so on a bright shot everything above it, and much just below it, lands on white or cyan: a lit wall goes flat. `[color].auto_fit_white_level` puts that percentile at a lower luma instead (`ColorFit.with_white_level`, which scales the gain about the black point and never pushes the white point past 255). The display mode applies it in `_fit_for_apply`, before the live `auto_fit_strength`, so it reaches the pre-scanned, online and shot fits alike, and a fit that does not stretch the highlights is left as it is. Unset, it is 220 on mcm and mhires and 255 on petscii; [the shaping defaults](#the-shaping-defaults--what-each-mode-gets-unset) say why.
 
 **Detections that are not cuts** land on camera moves, flashes and fades, since the ratio test needs a frame to differ from its neighbors twice as much as they differ from each other. On 17 of 20 such detections the refit added fewer than 240 changed cells over three frames, against 1300–2500 of ordinary churn; the other three coincided with a change of the whole picture.
 
@@ -458,6 +458,20 @@ A per-shot switch for the navy half was measured and rejected: a shot's navy sha
 **MCM** follows the same pattern: error against the source fell on five of the eight clips and on the film clip (the VHS ad −6%, the film clip −4%) and rose on the honey-and-sand video (+2%) and a 4K film (+1%). Dark amber rendered green roughly halved on the film clip, the VHS ad and the TV opening.
 
 **PETSCII** keeps the flat boost. Its frames are shaped by each style's own `petscii_styles._shaped_flat`, not by `shape_for_quantize`, and tapering that site moved the error by −1.5% to +2% with nothing gained on the film clip: PETSCII's glyph colors rarely render dark amber as green to begin with.
+
+### The shaping defaults — what each mode gets unset
+
+`[color]` leaves `channel_boost` empty and `auto_fit_white_level` unset. Every shaping mode takes `palette.CHANNEL_BOOST`, the [1.3, 1.2, 1.0] blue/green lift, and the built-in hue band, `DEFAULT_HUE_CORRECTIONS`. The white level differs: mcm and mhires take `AUTO_FIT_WHITE_LEVEL`, 220, and petscii takes `PETSCII_AUTO_FIT_WHITE_LEVEL`, 255. A value the config sets reaches every mode alike.
+
+**Why these values.** The level and the band are the shaping half of a candidate mhires video look that won an A/B on a C128 with a Kawari, judged by eye. Headroom at 220 keeps a lit wall or sky off the white and cyan entries. The band lifts bright, saturated gold and amber (hue 36–60°, S ≥ 0.6, V ≥ 0.2) by V ×1.3, so a light-cycle trail reaches yellow or orange rather than brown. It holds V to ×1.3 and does not snap hue, because the violet band it replaces, V ×1.9 with a magenta snap, lifted lilac-lit shadows and faces a whole luma step.
+
+**Why the lift stays.** The same look dropped the gain to 1.0 on mcm and mhires, because the lift tints a gray wall, beige case or face cyan once the fit has stretched it. On hardware that version looked uniformly gray. Taking the three changes one at a time on 16 clips, mhires on the Kawari palette, all of the lost color came from the gain: mean OKLab chroma of the render fell 23% without the lift (blue and cyan pixels from 18% of the frame to 9%, near-grays from 23% to 28%), while the 220 level and the band each moved it by under 1%. With the lift back, chroma is within 1% of the earlier defaults (that gain, 255, no band) on the Kawari palette and within 3% on pepto, and mcm within 3%.
+
+**Measured** offline against those earlier defaults, as blurred OKLab error against the source over the same 16 clips: −12% on mhires and −9% on mcm with the Kawari palette, −14% on mhires with pepto. Chroma error rose 2–5% on mhires, the cost of keeping the lift's color, and held on mcm. Over ten scanned photographs and ads on mhires, error fell 3% and chroma held. The band raises error against the source on the gold pixels themselves, by design: it moves them past the source's brightness onto the palette's yellow and orange. On one light-cycle frame its orange lands on light red.
+
+**Why petscii keeps a level of 255.** PETSCII draws luma as how much of a glyph is lit over a black screen, so a dimmer target thins the glyphs: over 96 video frames a 220 level raised error against the source on 90. The band alone moved petscii by under 0.1%, so it is shared.
+
+A scene that prefers the earlier look sets `[scenes.color] auto_fit_white_level = 255` and `hue_corrections_replace_defaults = true`.
 
 ### `[color].cell_strategy` — which 3 colors fill a cell
 

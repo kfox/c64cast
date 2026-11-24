@@ -1620,7 +1620,7 @@ def auto_fit_shot_cfg_error(label: str, color: ColorCfg) -> str | None:
         return f"{label}.auto_fit_shot_max_rise must be >= 1.0, got {color.auto_fit_shot_max_rise}"
     if not 0.0 <= color.auto_fit_shot_relax <= 1.0:
         return f"{label}.auto_fit_shot_relax must be in 0..1, got {color.auto_fit_shot_relax}"
-    if not 128.0 <= color.auto_fit_white_level <= 255.0:
+    if color.auto_fit_white_level is not None and not 128.0 <= color.auto_fit_white_level <= 255.0:
         return f"{label}.auto_fit_white_level must be in 128..255, got {color.auto_fit_white_level}"
     if not color.gray_penalty >= 0.0:
         return f"{label}.gray_penalty must be >= 0, got {color.gray_penalty}"
