@@ -82,14 +82,14 @@ is the `hw-visual-verify` skill.
 
 ## Workflow
 
-Non-trivial changes go through the [`ship` skill](.claude/skills/ship/SKILL.md)
+Non-trivial changes go through the [`land` skill](.claude/skills/land/SKILL.md)
 — see it for the stages, the pinned-paths review policy, and the never-merge
 rule. **Never merge** — hand over a green PR; the merge is Kelly's.
 
 **Every change happens in a worktree of its own**, under
 `.claude/worktrees/<name>` and with its own environment — call `EnterWorktree`
 with a `name` before the first edit, whether or not the change goes through
-`ship`. The primary checkout is shared, so another session may be standing in
+`land`. The primary checkout is shared, so another session may be standing in
 it and a `git pull` there moves HEAD out from under uncommitted work. Two hooks
 hold the line: [`require-worktrees-in-checkout.py`](.claude/hooks/require-worktrees-in-checkout.py)
 refuses a `git worktree add` aimed anywhere else, and
@@ -105,7 +105,7 @@ redirection) reaches neither hook, so there it rests on this rule alone.
 
 ### Findings: fix it, file it, or drop it
 
-These rules bind every session and subagent that works here: a ship run, a
+These rules bind every session and subagent that works here: a land run, a
 one-off fix, a finder, a review lane, the `reviewer`. An agent's definition or
 prompt may narrow its lane; it never loosens these. A prompt that hands work to
 a subagent says "follow CLAUDE.md → Findings" rather than paraphrasing them.
@@ -154,7 +154,7 @@ those labels to tell whether review is missing things.
 **Reviews** run through the agents in [.claude/agents/](.claude/agents/):
 `reviewer` for every change, and the four lanes `/panel-review`
 ([.claude/skills/panel-review/](.claude/skills/panel-review/SKILL.md)) launches
-when a panel is chosen instead. The `ship` skill's step 3 says which review a
+when a panel is chosen instead. The `land` skill's step 3 says which review a
 change gets. A reviewer runs `make check` with the worktree's override as above,
 and runs `make mutation-ready` before any mutation proof.
 
@@ -189,7 +189,7 @@ a site the list has not caught up to yet:
   ones holding publish rights (PyPI, the Pages site, GitHub releases). A change
   here can turn a gate green without running it, or ship what nobody reviewed.
 
-**Hardware during a review or a ship run** is allowed only when the caller's
+**Hardware during a review or a land run** is allowed only when the caller's
 prompt authorizes it for that run, and then only under the rules in
 [.claude/skills/hw-visual-verify/hardware-runs.md](.claude/skills/hw-visual-verify/hardware-runs.md).
 Without that authorization, a claim only hardware can settle goes back to the

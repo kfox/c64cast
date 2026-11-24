@@ -1,4 +1,4 @@
-# Hardware during a review or a ship run
+# Hardware during a review or a land run
 
 The suite fakes every backend, so prove a finding there first. When the
 caller's prompt says hardware use is authorized for this run, an agent can use

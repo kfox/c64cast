@@ -5,7 +5,7 @@ checkout.
 A change in this repository belongs in a worktree of its own, under
 `.claude/worktrees/`, with an environment of its own. The primary checkout is
 shared: another session may be standing in it, and a `git pull` there moves
-HEAD out from under uncommitted work. `.claude/skills/ship/SKILL.md` step 1 is
+HEAD out from under uncommitted work. `.claude/skills/land/SKILL.md` step 1 is
 where a change is told to enter one; this is the backstop for a session that
 did not.
 
