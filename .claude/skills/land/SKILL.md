@@ -137,7 +137,7 @@ commits that only make sense together, reviewed as one `BASE..TIP` range.
 | Trivial: ≤10 changed code lines, mechanical (rename, typo, a line the user dictated, a dependency bump), no pinned path | none — the gate covers it, and the final pass sees it if one runs |
 | ≤50 changed code lines, a merge or conflict resolution, or a reviewer's fix commit | `low` |
 | Anything else | `medium` |
-| Touches a pinned path ([CLAUDE.md](../../../CLAUDE.md) → Workflow) | `high` |
+| Touches a pinned path ([CLAUDE.md](../../../CLAUDE.md) → High-risk paths) | `high` |
 | Eligible for a panel by the thresholds in `/panel-review`'s "When a panel is an option" (50+ changed code lines plus a trust boundary, contract, concurrency or pinned-path behavior change; or an unsplittable 400+) | optionally `/panel-review <sha>` *instead of* the reviewer at `high`, never in addition |
 
 Run it with the project's `reviewer` agent, which works directly in the

@@ -66,7 +66,7 @@ user.
   - `_pollthread.py` loops;
   - the session and playlist threads;
   - the main-thread preview pump.
-- **Pinned path:** the list in `CLAUDE.md` under Workflow.
+- **Pinned path:** the list in `CLAUDE.md` under High-risk paths.
 
 **Never a panel:** a change below 50 changed code lines (the reviewer at `high`
 covers a risky small one), a prose-only or trivial change, a merge resolution,

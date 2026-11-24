@@ -158,42 +158,39 @@ when a panel is chosen instead. The `land` skill's step 3 says which review a
 change gets. A reviewer runs `make check` with the worktree's override as above,
 and runs `make mutation-ready` before any mutation proof.
 
-**Pinned paths.** A change touching any of these is reviewed at `high`,
-whatever its size, because a one-line change there does the most damage. This
-list does not replace the security notes elsewhere in this file, which may name
-a site the list has not caught up to yet:
-
-- `c64cast/hw/api.py`, `hw/socket_dma.py`, `hw/teensyrom_dma.py`,
-  `hw/backend.py`: the DMA write path to the hardware, including the shared
-  `write_memory*`/`write_regs`/`write_region` implementation that every backend
-  sits on top of.
-- `tests/_fs_sandbox.py`: the suite's filesystem sandbox, which is never
-  widened to make a test pass.
-- `c64cast/app/connect.py`, `app/config_serialize.py`,
-  `app/recording_metadata.py`, `app/cli.py`:
-  - connection-target parsing;
-  - the rule that the DMA password never rides in a URL or CLI flag;
-  - the redaction list that `--save-settings` and the scene-log snapshot both
-    depend on;
-  - the env/config precedence that decides which value wins.
-- `c64cast/control/auth.py`, `control/web_api.py`, `app/serve.py`:
-  - the `[web]`/`[control]` token gate itself (`auth.py`: token comparison,
-    viewer/full-role checks);
-  - the routes that depend on it;
-  - where the token is minted and its precedence resolved (`serve.py`:
-    `resolve_tokens`, `_generated_token`, `build_daemon_app`).
-
-  This token is the same class of secret as the DMA password, and it gates the
-  same kind of remote control of the host.
-- `.github/workflows/`: the jobs that decide whether a PR may merge, and the
-  ones holding publish rights (PyPI, the Pages site, GitHub releases). A change
-  here can turn a gate green without running it, or ship what nobody reviewed.
+**Pinned paths** are the ones listed under [High-risk paths](#high-risk-paths)
+below; a change touching any of them is reviewed at `high`.
 
 **Hardware during a review or a land run** is allowed only when the caller's
 prompt authorizes it for that run, and then only under the rules in
 [.claude/skills/hw-visual-verify/hardware-runs.md](.claude/skills/hw-visual-verify/hardware-runs.md).
 Without that authorization, a claim only hardware can settle goes back to the
 caller as an open question.
+
+## High-risk paths
+
+A change touching any of these is reviewed at `high`, whatever its size,
+because a one-line change there does the most damage. Review tooling reads this
+list, so each bullet is exactly one git pathspec glob in the form
+``- `<glob>` — reason`` on a single line. The list does not replace the security
+notes elsewhere in this file, which may name a site it has not caught up to yet.
+
+- `c64cast/hw/api.py` — the DMA write path to the hardware, including the shared `write_memory*`/`write_regs`/`write_region` implementation every backend sits on
+- `c64cast/hw/socket_dma.py` — the U64 DMA write path
+- `c64cast/hw/teensyrom_dma.py` — the TeensyROM+ DMA write path
+- `c64cast/hw/backend.py` — the DMA write path every backend shares
+- `tests/_fs_sandbox.py` — the suite's filesystem sandbox, which is never widened to make a test pass
+- `c64cast/app/connect.py` — connection-target parsing, and the rule that the DMA password never rides in a URL
+- `c64cast/app/config_serialize.py` — the redaction list that `--save-settings` depends on
+- `c64cast/app/recording_metadata.py` — the redaction list that the scene-log snapshot depends on
+- `c64cast/app/cli.py` — no CLI flag for the DMA password, and the env/config precedence that decides which value wins
+- `c64cast/control/auth.py` — the `[web]`/`[control]` token gate itself: token comparison and the viewer/full-role checks
+- `c64cast/control/web_api.py` — the routes that depend on the token gate
+- `c64cast/app/serve.py` — where the token is minted and its precedence resolved (`resolve_tokens`, `_generated_token`, `build_daemon_app`)
+- `.github/workflows/**` — the jobs that decide whether a PR may merge and the ones holding publish rights (PyPI, the Pages site, GitHub releases); a change here can turn a gate green without running it, or ship what nobody reviewed
+
+The `[web]`/`[control]` token is the same class of secret as the DMA password,
+and it gates the same kind of remote control of the host.
 
 ## Spelling
 
