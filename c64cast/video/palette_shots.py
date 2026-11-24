@@ -65,17 +65,15 @@ class PaletteShotTracker:
     """Finds stretches in decode order and hands each one to `on_ready` once
     its fit frames are in.
 
-    `prepare` turns a decoded frame into the picture the display mode is
-    given, and `shape` into what its quantizer sees, which is what the table
-    is fitted to and what drift is measured on."""
+    `shape` turns a decoded picture into what the display mode's quantizer
+    sees, which is what the table is fitted to and what drift is measured
+    on."""
 
     def __init__(
         self,
-        prepare: Callable[[np.ndarray], np.ndarray],
         shape: Callable[[np.ndarray], np.ndarray],
         on_ready: Callable[[PaletteShot], None],
     ) -> None:
-        self._prepare = prepare
         self._shape = shape
         self._on_ready = on_ready
         self._detector = AdaptiveCutDetector(ratio=SHOT_CUT_RATIO)
@@ -97,7 +95,7 @@ class PaletteShotTracker:
     def observe(self, pts: float, frame_bgr: np.ndarray) -> tuple[float, PaletteShot] | None:
         """Fold in the next decoded frame. Returns the pts of a frame just
         found to start a stretch, with that stretch."""
-        small = _downscale(self._prepare(frame_bgr))
+        small = _downscale(frame_bgr)
         shaped = self._shape(small)
         self._recent.append((pts, shaped))
         if self._restarted:

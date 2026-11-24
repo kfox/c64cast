@@ -1789,9 +1789,7 @@ class VideoScene(MediaFileMixin, Scene):
         assert self.source is not None and self.display_mode is not None
         pusher = ShotPusher(control)
         self.source.shot_tracker = PaletteShotTracker(
-            partial(crop_to_aspect, aspect=self._aspect),
-            self.display_mode.quantizer_input,
-            pusher.ready,
+            self.display_mode.quantizer_input, pusher.ready
         )
         pusher.start()
         self._shot_pusher = pusher

@@ -106,7 +106,7 @@ class _Recorder:
 
 def _track(frames) -> tuple[list[float], _Recorder, ps.PaletteShotTracker]:
     rec = _Recorder()
-    tracker = ps.PaletteShotTracker(lambda f: f, lambda f: f, rec)
+    tracker = ps.PaletteShotTracker(lambda f: f, rec)
     starts = []
     for i, f in enumerate(frames):
         found = tracker.observe(i / FPS, f)
@@ -391,10 +391,7 @@ class FrameRenderPushTest(unittest.TestCase):
     def _show(self, render) -> None:
         from c64cast.scenes import scenes
 
-        with (
-            mock.patch.object(scenes, "_render_with_overlays", side_effect=render),
-            mock.patch.object(scenes, "crop_to_aspect", side_effect=lambda img, _aspect: img),
-        ):
+        with mock.patch.object(scenes, "_render_with_overlays", side_effect=render):
             self.scene.process_frame(0.0)
 
     def test_the_push_follows_the_frames_writes(self):
@@ -458,6 +455,22 @@ class VideoShotWiringTest(unittest.TestCase):
         self.scene.teardown()
         self.assertIsNone(self.scene._shot_pusher)
         self.assertFalse(pusher._thread.is_alive())
+
+    def test_shots_are_fitted_to_the_whole_picture_the_demux_thread_kept(self):
+        # The demux thread hands the tracker what aspect_mode keeps; "fit"
+        # keeps a 16:9 frame whole, so its edges are on screen and in the fit.
+        self.scene.aspect_mode = "fit"
+        with self.assertLogs("c64cast.scenes.scenes", level="INFO"):
+            self.scene.setup()
+        self.addCleanup(self.scene.teardown)
+        source = self.scene.source
+        assert source is not None
+        tracker = source.shot_tracker
+        assert isinstance(tracker, ps.PaletteShotTracker)
+        picture = np.zeros((36, 64, 3), np.uint8)
+        found = tracker.observe(0.0, picture)
+        assert found is not None
+        self.assertEqual(found[1].frames[0].shape, picture.shape)
 
     def test_off_keeps_one_palette_per_video(self):
         self.scene._color.hardware_palette_shots = False
