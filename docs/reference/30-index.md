@@ -24,7 +24,7 @@ Every name c64cast answers to — 473 of them — and the pages that discuss eac
 | `asid_max_sids` | [`asid` (2)](03-vocabulary.md#asid), [ASID (4)](05-sound-and-music.md#asid), [`asid` (B)](21-appendix-b-scene-types.md#asid) |
 | `asid_multi_sid` | [`asid` (2)](03-vocabulary.md#asid), [ASID (4)](05-sound-and-music.md#asid), [`asid` (B)](21-appendix-b-scene-types.md#asid) |
 | `asid_port` | [`asid` (B)](21-appendix-b-scene-types.md#asid) |
-| `aspect_mode` | [`slideshow` (2)](03-vocabulary.md#slideshow), [From Frame to Screen (3)](04-display-pipeline.md#from-frame-to-screen), [`slideshow` (B)](21-appendix-b-scene-types.md#slideshow) |
+| `aspect_mode` | [`slideshow` (2)](03-vocabulary.md#slideshow), [`video` (2)](03-vocabulary.md#video), [From Frame to Screen (3)](04-display-pipeline.md#from-frame-to-screen) |
 | `--audio` | [Audio (G)](26-appendix-g-cli-flags.md#audio) |
 | `[audio]` | [The Extra Layer (1)](02-config-rules.md#the-extra-layer), [The Console (6)](07-inputs-and-outputs.md#the-console), [`audio` (A)](20-appendix-a-configuration.md#audio) |
 | `audio` | [Writing It With `--save-settings` (1)](02-config-rules.md#writing-it-with---save-settings), [Audio (2)](03-vocabulary.md#audio), [`big_text` Wants the Scene to Itself (2)](03-vocabulary.md#big_text-wants-the-scene-to-itself) |

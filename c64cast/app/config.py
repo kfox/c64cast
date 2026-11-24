@@ -211,9 +211,9 @@ def _is_valid_param_holder(holder: str) -> bool:
     return holder in _PARAM_HOLDER_PREFIXES or _FX_LAYER_HOLDER_RE.match(holder) is not None
 
 
-# How a slideshow image is fit to the screen's aspect before the display mode
-# downscales it. See video.aspect.apply_aspect.
-_ASPECT_MODE_CHOICES = ("crop", "fit", "stretch")
+# How a slideshow image or a video frame is fit to the screen's aspect before
+# the display mode downscales it. See video.aspect.kept_aspect.
+_ASPECT_MODE_CHOICES = ("crop", "fit", "stretch", "hybrid")
 
 # Per-scene audio source for generative scenes — the AudioSource building block in
 # audio_source.py. "listen" analyzes the live input without any C64 audio output;
@@ -343,11 +343,11 @@ class HardwareCfg:
         default="auto",
         metadata={
             "help": "The shape of one C64 pixel on the screen being watched, "
-            "which sets the shape a video, picture or webcam frame is cropped "
-            "to so it is not drawn squeezed. 'composite' is a real VIC-II on a "
+            "which sets the shape a video, picture or webcam frame is fit "
+            "to (see aspect_mode) so it is not drawn squeezed. 'composite' is a real VIC-II on a "
             "4:3 set (0.75 wide per unit tall on NTSC, 0.94 on PAL, so the "
             "320x200 screen is 1.2:1 or 1.5:1); 'hdmi' is the Ultimate 64's "
-            "HDMI output (0.83 NTSC, 0.94 PAL); 'square' crops to 1.6:1, as if "
+            "HDMI output (0.83 NTSC, 0.94 PAL); 'square' fits to 1.6:1, as if "
             "the pixels were square. 'auto' (default) is 'hdmi' on an Ultimate "
             "64 and 'composite' on anything else, and under --skip-probe.",
             "choices": PIXEL_ASPECT_CHOICES,
@@ -1278,15 +1278,18 @@ class SceneCfg:
         },
     )
     aspect_mode: str = field(
-        default="crop",
+        default="fit",
         metadata={
-            "help": "How each image is fit to the screen's aspect (which "
-            "[hardware].pixel_aspect sets): 'crop' "
-            "(center-crop to fill — the default, edges lost), 'fit' "
-            "(letterbox/pillarbox so the whole image shows, padded black), or "
-            "'stretch' (distort to fill, no padding or cropping).",
+            "help": "How each image or video frame is fit to the screen's "
+            "aspect (which [hardware].pixel_aspect sets): 'fit' "
+            "(letterbox/pillarbox so the whole picture shows, padded black "
+            "— the default), 'crop' (center-crop to fill, edges lost), "
+            "'hybrid' (center-crop halfway between the source's aspect and "
+            "the screen's, then letterbox/pillarbox the rest — 16:9 into 4:3 "
+            "becomes the broadcast 14:9), or 'stretch' (distort to fill, no "
+            "padding or cropping).",
             "choices": _ASPECT_MODE_CHOICES,
-            "applies_to": ("slideshow",),
+            "applies_to": ("video", "slideshow"),
         },
     )
     target_fps: float | None = field(

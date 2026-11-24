@@ -37,7 +37,7 @@ def _observe_all(
 
 class ShotTrackerTest(unittest.TestCase):
     def _tracker(self, fit_frames: int = 4) -> ShotTracker:
-        return ShotTracker(lambda frame: frame, fit_frames)
+        return ShotTracker(fit_frames)
 
     def test_a_cut_is_reported_at_the_cut_frames_pts_two_frames_later(self):
         frames = [_dark() for _ in range(30)] + [_bright(k) for k in range(30)]
@@ -55,15 +55,6 @@ class ShotTrackerTest(unittest.TestCase):
     def test_one_unbroken_shot_reports_no_cut(self):
         self.assertEqual(_observe_all(self._tracker(), [_bright(k) for k in range(40)]), [])
 
-    def test_the_tracker_fits_the_prepared_frame(self):
-        frames = [_dark() for _ in range(30)] + [_bright(k) for k in range(30)]
-        tracker = ShotTracker(lambda frame: frame[:, 80:], fit_frames=4)
-        [(_, _, shot)] = _observe_all(tracker, frames)
-        expected = ColorFitAccumulator(strength=1.0)
-        for k in range(4):
-            expected.add(_bright(k)[:, 80:])
-        self.assertEqual(shot.result(), expected.result())
-
     def test_a_seek_back_soon_after_a_cut_starts_a_shot_at_the_landing_frame(self):
         tracker = self._tracker(fit_frames=4)
         _observe_all(tracker, [_dark() for _ in range(30)] + [_bright(k) for k in range(6)])
@@ -80,14 +71,6 @@ class ShotTrackerTest(unittest.TestCase):
         tracker = self._tracker()
         _observe_all(tracker, [_dark() for _ in range(30)])
         tracker.restart(_dark())
-        self.assertEqual([tracker.observe(k * FRAME_S, _dark()) for k in range(5)], [None] * 5)
-
-    def test_the_picture_shown_at_a_seek_is_compared_as_prepared(self):
-        tracker = ShotTracker(lambda frame: frame[:, 80:], fit_frames=4)
-        _observe_all(tracker, [_dark() for _ in range(30)])
-        shown = _dark()
-        shown[:, :80] = 220
-        tracker.restart(shown)
         self.assertEqual([tracker.observe(k * FRAME_S, _dark()) for k in range(5)], [None] * 5)
 
     def test_a_cut_soon_after_a_seek_is_found(self):

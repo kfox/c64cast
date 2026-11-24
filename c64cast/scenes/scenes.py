@@ -40,7 +40,7 @@ from c64cast.control.transport import make_loop_preset_store, timecode
 from c64cast.hw import machine_input
 from c64cast.hw.backend import C64Backend, DacPacing, LinkError
 from c64cast.hw.c64 import CIA1, SCREEN
-from c64cast.video.aspect import apply_aspect, crop_to_aspect, screen_aspect
+from c64cast.video.aspect import crop_for_mode, crop_to_aspect, pad_for_mode, screen_aspect
 from c64cast.video.modes import BitmapDisplayMode, DisplayMode
 from c64cast.video.modes_irq import reu_pump_skips_irq_hook
 from c64cast.video.palette import (
@@ -300,16 +300,19 @@ class Scene:
     # `[hardware].pixel_aspect`, which scene_factory passes to every scene
     # that fits a source picture to the screen.
     pixel_aspect: str = "auto"
+    # Only video and slideshow scenes take `aspect_mode`; the rest crop.
+    aspect_mode: str = "crop"
 
     def fit_aspect(self) -> float:
         """The screen aspect a source picture is fit to on this machine."""
         return screen_aspect(self.pixel_aspect, self.api.profile)
 
     def decode_target(self, aspect: float) -> DecodeTarget | None:
-        """The display mode's ``frame_target_size`` with the ``aspect`` the
-        picture will be cropped to, or None when the mode has no target."""
+        """The display mode's ``frame_target_size`` with the screen ``aspect``
+        the picture is fit to and this scene's ``aspect_mode``, or None when
+        the mode has no target."""
         size = getattr(self.display_mode, "frame_target_size", None)
-        return None if size is None else DecodeTarget(size[0], size[1], aspect)
+        return None if size is None else DecodeTarget(size[0], size[1], aspect, self.aspect_mode)
 
     def __init__(
         self,
@@ -1125,7 +1128,7 @@ class SlideshowScene(MediaFileMixin, Scene):
         display_spec: str | None = "mhires",
         wiring: DisplayWiring | None = None,
         color: ColorCfg | None = None,
-        aspect_mode: str = "crop",
+        aspect_mode: str = "fit",
         pixel_aspect: str = "auto",
     ):
         from c64cast.app.config import ColorCfg
@@ -1133,7 +1136,7 @@ class SlideshowScene(MediaFileMixin, Scene):
 
         self.file_spec = file
         self.image_duration_s = float(image_duration_s)
-        self._aspect_mode = aspect_mode
+        self.aspect_mode = aspect_mode
         self.pixel_aspect = pixel_aspect
         # Drives the display-mode shaping at construction and the per-slide
         # color fit / forced-palette remap recomputed in _advance_image.
@@ -1151,6 +1154,9 @@ class SlideshowScene(MediaFileMixin, Scene):
         self._shuffle_bag: list[str] = []
         self._current_path: str | None = None
         self._current_img: np.ndarray | None = None
+        # The slide without its letterbox bars, which the color statistics
+        # read.
+        self._current_picture: np.ndarray | None = None
         self._image_start: float = 0.0
         self.start_time: float = 0.0
         self._prepared = False
@@ -1237,12 +1243,14 @@ class SlideshowScene(MediaFileMixin, Scene):
         return self._shuffle_bag.pop(0)
 
     def _load_slide(self, path: str) -> np.ndarray | None:
+        """The part of the picture at ``path`` the scene's ``aspect_mode``
+        shows, not yet padded to the screen."""
         aspect = self.fit_aspect()
         target = self.decode_target(aspect)
         img = _decode_picture(path, target)
         if img is None:
             return None
-        return apply_aspect(self._shrink_for_display(img, target), self._aspect_mode, aspect)
+        return crop_for_mode(self._shrink_for_display(img, target), self.aspect_mode, aspect)
 
     def _queue_next_slide(self) -> None:
         """Start decoding the slide after the one on screen, off the render
@@ -1266,7 +1274,8 @@ class SlideshowScene(MediaFileMixin, Scene):
 
     def _show_slide(self, path: str, img: np.ndarray) -> None:
         self._current_path = path
-        self._current_img = img
+        self._current_picture = img
+        self._current_img = pad_for_mode(img, self.aspect_mode, self.fit_aspect())
         if self.display_mode is not None:
             c = self._color
             if c.auto_fit:
@@ -1307,6 +1316,7 @@ class SlideshowScene(MediaFileMixin, Scene):
         self._shuffle_bag = []
         self._current_path = None
         self._current_img = None
+        self._current_picture = None
         try:
             self._candidates = self._resolve_candidates()
         except ValueError as e:
@@ -1348,8 +1358,8 @@ class SlideshowScene(MediaFileMixin, Scene):
         self._queue_next_slide()
 
     def _push_slide_palette(self) -> None:
-        if self._hw_palette is not None and self._current_img is not None:
-            _push_source_palette(self, self._hw_palette, [self._current_img])
+        if self._hw_palette is not None and self._current_picture is not None:
+            _push_source_palette(self, self._hw_palette, [self._current_picture])
             # The push can take most of a second, which is not the slide's.
             self._image_start = time.time()
 
@@ -1422,6 +1432,7 @@ class VideoScene(MediaFileMixin, Scene):
         loop_audio: str = "on",
         setup_progress: bool = True,
         pixel_aspect: str = "auto",
+        aspect_mode: str = "fit",
     ):
         """`file` is a comma-separated `resolve_file_spec` spec (or a single
         literal path — the spec grammar treats one path as a one-entry
@@ -1437,6 +1448,7 @@ class VideoScene(MediaFileMixin, Scene):
         candidates = self._resolve_candidates()
         super().__init__(api, audio, display_mode, self._initial_scene_name(candidates))
         self.pixel_aspect = pixel_aspect
+        self.aspect_mode = aspect_mode
         # True when prepare_next() has already chosen this iteration's file, so
         # setup() consumes that pick instead of re-rolling.
         self._prepared = False
@@ -1590,8 +1602,7 @@ class VideoScene(MediaFileMixin, Scene):
         # The only resolution the display mode consumes (≤320×200); AVFileSource
         # downscales to it during decode rather than converting the full source
         # frame. See video._plan_decode_size. One aspect per setup, so the
-        # decode plan, the demux thread's trim and the render's crop all cut
-        # the same window.
+        # demux thread's crop and the render's padding frame the same screen.
         self._aspect = self.fit_aspect()
         decode_target = self.decode_target(self._aspect)
         try:
@@ -1705,9 +1716,7 @@ class VideoScene(MediaFileMixin, Scene):
                     ONLINE_FIT_WARMUP_FRAMES,
                 )
                 if c.auto_fit_shots:
-                    self.source.shot_tracker = ShotTracker(
-                        partial(crop_to_aspect, aspect=self._aspect), ONLINE_FIT_WARMUP_FRAMES
-                    )
+                    self.source.shot_tracker = ShotTracker(ONLINE_FIT_WARMUP_FRAMES)
                     self._refits_at_cuts = True
             else:
                 self.display_mode.set_color_fit(None)
@@ -2046,13 +2055,12 @@ class VideoScene(MediaFileMixin, Scene):
             if frame_clock_s == clock_s:
                 self._record_av_lag(clock_s, current_time)
                 self._follow_drain(clock_s, time.monotonic())
-        img = crop_to_aspect(img, self._aspect)
         if new_source and self._refits_at_cuts:
             shot = self.source.take_shot()
             if shot is not None:
                 self._install_shot_fit(shot)
-        # Before annotation, so the debug digits stay out of the
-        # contrast/saturation stats.
+        # Before padding and annotation, so the letterbox bars and the debug
+        # digits stay out of the contrast/saturation stats.
         if (
             new_source
             and self._online_fit is not None
@@ -2062,6 +2070,7 @@ class VideoScene(MediaFileMixin, Scene):
             self._online_fit.add(img)
             self._online_fit_frames += 1
             self._apply_fit()
+        img = pad_for_mode(img, self.aspect_mode, self._aspect)
         if self.show_frame_numbers:
             fps = self.source.video_fps or 30.0
             file_s = tr.clock_to_content(frame_clock_s)

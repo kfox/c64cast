@@ -265,7 +265,7 @@ def local_choices() -> dict[str, str]:
         "SID_VIDEO_MODE_CHOICES": "hw_provision tests `!= 'off'`",
         "SYSTEM_CHOICES": "hw.backend and hw.hw_provision .upper() the value",
         "_APPLY_CHOICES": "introspect.FieldDoc.apply carries the value to the on-C64 menu",
-        "_ASPECT_MODE_CHOICES": "video.aspect.apply_aspect branches on the value",
+        "_ASPECT_MODE_CHOICES": "video.aspect.kept_aspect branches on the value",
         "_AUDIO_SOURCE_CHOICES": "no registry backs the AudioSource family (pinned as a literal below)",
         "_CLIP_LAUNCH_CHOICES": "performance.PerformanceSession reads the per-clip value",
         "_CLIP_PAD_TYPE_CHOICES": "control.midi_control maps the grid pad by the value",

@@ -75,13 +75,16 @@ def blurred_oklab(bgr: np.ndarray, sigma_px: float = DEFAULT_BLUR_SIGMA_PX) -> n
     return oklab_from_linear(blurred)
 
 
-def oklab_mse(a_lab: np.ndarray, b_lab: np.ndarray) -> float:
-    """Mean over pixels of the squared OKLab distance."""
-    return float(np.mean(np.sum((a_lab - b_lab) ** 2, axis=-1)))
+def oklab_mse(a_lab: np.ndarray, b_lab: np.ndarray, mask: np.ndarray | None = None) -> float:
+    """Mean over pixels (those `mask` marks, if given) of the squared OKLab
+    distance."""
+    dist = np.sum((a_lab - b_lab) ** 2, axis=-1)
+    return float(np.mean(dist if mask is None else dist[mask]))
 
 
-def ssim(a: np.ndarray, b: np.ndarray) -> float:
-    """Mean SSIM of two single-channel float images in 0..1."""
+def ssim(a: np.ndarray, b: np.ndarray, mask: np.ndarray | None = None) -> float:
+    """Mean SSIM of two single-channel float images in 0..1, over the pixels
+    `mask` marks if given."""
 
     def blur(x: np.ndarray) -> np.ndarray:
         return cv2.GaussianBlur(x, (0, 0), _SSIM_SIGMA, borderType=cv2.BORDER_REFLECT)
@@ -94,7 +97,8 @@ def ssim(a: np.ndarray, b: np.ndarray) -> float:
     cov = blur(a * b) - mu_a * mu_b
     num = (2 * mu_a * mu_b + _SSIM_C1) * (2 * cov + _SSIM_C2)
     den = (mu_a * mu_a + mu_b * mu_b + _SSIM_C1) * (var_a + var_b + _SSIM_C2)
-    return float(np.mean(num / den))
+    ratio = num / den
+    return float(np.mean(ratio if mask is None else ratio[mask]))
 
 
 def _cells(img: np.ndarray) -> np.ndarray:
@@ -105,8 +109,12 @@ def _cells(img: np.ndarray) -> np.ndarray:
 
 def cells_changed(prev: np.ndarray, cur: np.ndarray) -> np.ndarray:
     """(25, 40) bool: cells in which any displayed pixel differs."""
-    diff = prev != cur
-    return _cells(diff).reshape(CELL_ROWS, CELL_COLS, -1).any(axis=-1)
+    return cells_touched(prev != cur)
+
+
+def cells_touched(mask: np.ndarray) -> np.ndarray:
+    """(25, 40) bool: cells holding any pixel of a (200, 320) `mask`."""
+    return _cells(mask).reshape(CELL_ROWS, CELL_COLS, -1).any(axis=-1)
 
 
 def cell_mean_delta(prev_lab: np.ndarray, cur_lab: np.ndarray) -> np.ndarray:

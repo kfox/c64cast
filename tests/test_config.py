@@ -1963,6 +1963,11 @@ class ValidateSceneCfgTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "aspect_mode must be one of"):
             scene_factory.validate_scene_cfg(s, self._cfg(), audio_enabled=False)
 
+    def test_video_aspect_mode_rejects_unknown(self):
+        s = cfgmod.SceneCfg(type="video", file="video.mp4", aspect_mode="contain")
+        with self.assertRaisesRegex(ValueError, "video: aspect_mode must be one of"):
+            scene_factory.validate_scene_cfg(s, self._cfg(), audio_enabled=False)
+
     def test_slideshow_display_random_resolves_to_known_mode(self):
         for _ in range(10):
             picked = scene_factory._resolve_slideshow_display("random")

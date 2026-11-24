@@ -8,23 +8,27 @@ import os
 import tempfile
 import unittest
 from typing import cast
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import cv2
 import numpy as np
 from _fakes import FakeAPI
 
 from c64cast.app import scene_factory
-from c64cast.app.config import Config, SceneCfg
+from c64cast.app.config import ColorCfg, Config, SceneCfg
 from c64cast.hw.backend import TEENSYROM_PROFILE, ULTIMATE_PROFILE, C64Backend, HardwareProfile
+from c64cast.scenes import scenes
 from c64cast.scenes.scenes import SlideshowScene, WebcamScene
 from c64cast.video.aspect import (
-    apply_aspect,
+    crop_for_mode,
     crop_to_aspect,
     fit_to_aspect,
+    kept_aspect,
+    pad_for_mode,
     pixel_aspect,
     screen_aspect,
 )
+from c64cast.video.palette import ColorFitAccumulator
 from c64cast.video.video import WebcamSource
 
 SQUARE = 320 / 200
@@ -131,18 +135,37 @@ class FitToAspectTest(unittest.TestCase):
         self.assertIs(fit_to_aspect(img, SQUARE), img)
 
 
-class ApplyAspectDispatchTest(unittest.TestCase):
-    def test_crop_matches_crop_helper(self):
-        img = _solid(100, 320)
-        self.assertEqual(apply_aspect(img, "crop", 1.2).shape, crop_to_aspect(img, 1.2).shape)
+class AspectModeTest(unittest.TestCase):
+    def test_crop_keeps_the_screens_aspect(self):
+        self.assertEqual(kept_aspect(1920, 1080, "crop", 4 / 3), 4 / 3)
 
-    def test_fit_matches_fit_helper(self):
-        img = _solid(100, 320)
-        self.assertEqual(apply_aspect(img, "fit", 1.2).shape, fit_to_aspect(img, 1.2).shape)
+    def test_fit_and_stretch_keep_the_whole_source(self):
+        img = _solid(90, 160)
+        for mode in ("fit", "stretch"):
+            with self.subTest(mode=mode):
+                self.assertIs(crop_for_mode(img, mode, 4 / 3), img)
 
-    def test_stretch_is_identity(self):
-        img = _solid(100, 100)
-        self.assertIs(apply_aspect(img, "stretch", 1.2), img)
+    def test_hybrid_takes_sixteen_by_nine_into_four_by_three_to_fourteen_by_nine(self):
+        self.assertAlmostEqual(kept_aspect(1920, 1080, "hybrid", 4 / 3), 14 / 9)
+
+    def test_hybrid_crops_a_tall_source_vertically_to_the_mean(self):
+        out = crop_for_mode(_solid(1600, 900), "hybrid", 4 / 3)
+        self.assertEqual(out.shape[1], 900)
+        self.assertAlmostEqual(out.shape[1] / out.shape[0], (9 / 16 + 4 / 3) / 2, places=2)
+
+    def test_fit_and_hybrid_pad_to_the_screen(self):
+        img = _solid(90, 160)
+        for mode in ("fit", "hybrid"):
+            with self.subTest(mode=mode):
+                out = pad_for_mode(crop_for_mode(img, mode, 1.2), mode, 1.2)
+                self.assertAlmostEqual(out.shape[1] / out.shape[0], 1.2, places=2)
+                self.assertTrue((out[0] == 0).all())
+
+    def test_crop_and_stretch_do_not_pad(self):
+        img = _solid(90, 160)
+        for mode in ("crop", "stretch"):
+            with self.subTest(mode=mode):
+                self.assertIs(pad_for_mode(img, mode, 1.2), img)
 
 
 def _pillarboxed(height: int = 720, width: int = 1280, picture_width: int = 960) -> np.ndarray:
@@ -188,10 +211,49 @@ class SlideshowFitAspectTest(unittest.TestCase):
         img = self._slide(FakeAPI(), pixel_aspect="square")
         self.assertAlmostEqual(img.shape[1] / img.shape[0], SQUARE, places=2)
 
+    def _shown(self, aspect_mode: str, color: ColorCfg) -> tuple[SlideshowScene, np.ndarray]:
+        """A 16:9 gray ramp with no black in it, shown on an NTSC C64, and
+        the picture loaded from it before any padding."""
+        path = os.path.join(os.path.dirname(self.path), "ramp.png")
+        row = np.linspace(60, 160, 640).astype(np.uint8)
+        cv2.imwrite(path, np.repeat(np.tile(row, (360, 1))[:, :, None], 3, axis=2))
+        mode = MagicMock(frame_target_size=(320, 200))
+        scene = SlideshowScene(
+            cast(C64Backend, FakeAPI()), mode, path, aspect_mode=aspect_mode, color=color
+        )
+        img = scene._load_slide(path)
+        assert img is not None
+        scene._show_slide(path, img)
+        return scene, img
+
     def test_fit_pads_to_the_screen_aspect(self):
-        img = self._slide(FakeAPI(), aspect_mode="fit")
+        img = self._shown("fit", ColorCfg())[0]._current_img
+        assert img is not None
         self.assertAlmostEqual(img.shape[1] / img.shape[0], 1.2, places=2)
         self.assertTrue((img[0] == 0).all())
+
+    def test_the_bars_stay_out_of_the_slides_color_fit(self):
+        for aspect_mode in ("fit", "hybrid"):
+            with self.subTest(aspect_mode=aspect_mode):
+                scene, picture = self._shown(aspect_mode, ColorCfg(auto_fit=True))
+                expected = ColorFitAccumulator(strength=1.0)
+                expected.add(picture)
+                fit = cast(MagicMock, scene.display_mode).set_color_fit.call_args.args[0]
+                self.assertEqual(fit, expected.result())
+
+    def test_the_bars_stay_out_of_the_slides_color_map(self):
+        with patch.object(scenes, "ColorMapAccumulator") as accumulator:
+            _, picture = self._shown("fit", ColorCfg(force_palette=True))
+        [sampled] = accumulator.return_value.add.call_args.args
+        self.assertIs(sampled, picture)
+
+    def test_the_bars_stay_out_of_the_slides_hardware_palette(self):
+        scene, picture = self._shown("fit", ColorCfg())
+        scene._hw_palette = MagicMock()
+        with patch.object(scenes, "_push_source_palette") as push:
+            scene._push_slide_palette()
+        [sampled] = push.call_args.args[2]
+        self.assertIs(sampled, picture)
 
 
 class WebcamFitAspectTest(unittest.TestCase):
@@ -235,6 +297,24 @@ class SceneFactoryPixelAspectTest(unittest.TestCase):
         s = SceneCfg(type="video", file=path)
         scene = scene_factory.build_scene(s, self.cfg, self.api, None, None)
         self.assertEqual(scene.pixel_aspect, "square")
+
+    def test_video_carries_its_aspect_mode(self):
+        path = os.path.join(self.dir, "a.mp4")
+        open(path, "wb").close()
+        s = SceneCfg(type="video", file=path, aspect_mode="hybrid")
+        scene = scene_factory.build_scene(s, self.cfg, self.api, None, None)
+        self.assertEqual(scene.aspect_mode, "hybrid")
+
+    def test_video_and_slideshow_fit_unless_told_otherwise(self):
+        video = os.path.join(self.dir, "a.mp4")
+        open(video, "wb").close()
+        picture = os.path.join(self.dir, "a.png")
+        cv2.imwrite(picture, _solid(4, 4))
+        for scene_type, path in (("video", video), ("slideshow", picture)):
+            with self.subTest(scene_type=scene_type):
+                s = SceneCfg(type=scene_type, file=path)
+                scene = scene_factory.build_scene(s, self.cfg, self.api, None, None)
+                self.assertEqual(scene.aspect_mode, "fit")
 
     def test_the_live_camera_fallback(self):
         self.cfg.scenes = []

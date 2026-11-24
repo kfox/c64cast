@@ -21,6 +21,10 @@ displayed-frame rate); the *direction* across alphas does not.
     python -m scripts.diags.mhires_ema_ghost_ab \
         --video CLIP --t0 26 --t1 32 --fps 15
 
+Pictures are framed for `--aspect-mode` (`fit`, the scene default, unless
+told otherwise; `crop` reproduces runs before that), and the ghost is
+measured only over the screen the picture covers, not the letterbox bars.
+
 Confirm the winning alpha on real hardware afterward (this is fps-approximate).
 """
 
@@ -32,11 +36,10 @@ import os
 import cv2
 import numpy as np
 
-from c64cast.app.config import ColorCfg
-from c64cast.video.aspect import crop_to_aspect
+from c64cast.app.config import _ASPECT_MODE_CHOICES, ColorCfg
 from c64cast.video.modes import base as modes_base
 from c64cast.video.palette import ColorFit, ColorFitAccumulator
-from scripts.diags._offline_video import ASPECT, OfflineMhires, iter_frames
+from scripts.diags._offline_video import DEFAULT_ASPECT_MODE, OfflineMhires, iter_frames
 
 OUT_DIR = os.path.join(os.path.dirname(__file__), "out")
 
@@ -45,8 +48,10 @@ def _timecode(s: float) -> str:
     return f"{int(s // 60):02d}:{s % 60:05.2f}"
 
 
-def fixed_fit_renderer(fit: ColorFit | None) -> OfflineMhires:
-    return OfflineMhires(color=ColorCfg(auto_fit=False), fit=fit)
+def fixed_fit_renderer(
+    fit: ColorFit | None, aspect_mode: str = DEFAULT_ASPECT_MODE
+) -> OfflineMhires:
+    return OfflineMhires(color=ColorCfg(auto_fit=False), fit=fit, aspect_mode=aspect_mode)
 
 
 def render_sequence(
@@ -59,28 +64,30 @@ def render_sequence(
     save_every: float,
     stateless: bool = False,
     hyst_scale: float = 1.0,
-) -> list[tuple[float, np.ndarray]]:
+    aspect_mode: str = DEFAULT_ASPECT_MODE,
+) -> tuple[list[tuple[float, np.ndarray]], np.ndarray]:
     """Compose the window at `fps`, returning a subsampled (every `save_every` s)
     list of (tick_time, rendered BGR). With `stateless=True`, a FRESH mode is
     built for every frame (no EMA/hysteresis history) — the ghost-free ground
     truth. Otherwise a single persistent mode accumulates temporal state with
     EMA `alpha` and hysteresis bonuses scaled by `hyst_scale`. The EMA advances
-    at the FULL `fps`; only output is subsampled."""
+    at the FULL `fps`; only output is subsampled. Also returns the screen
+    pixels the picture covers."""
     modes_base.PERCELL_PICK_EMA_ALPHA = alpha  # modes.base global, read per-frame in compose
     base_q, base_c = 5000.0, 5000.0  # PERCELL_QUANT/CODE_HYSTERESIS_BONUS defaults
     modes_base.PERCELL_QUANT_HYSTERESIS_BONUS = base_q * hyst_scale  # read in mode __init__
     modes_base.PERCELL_CODE_HYSTERESIS_BONUS = base_c * hyst_scale
-    renderer = fixed_fit_renderer(fit)
+    renderer = fixed_fit_renderer(fit, aspect_mode)
     saved: list[tuple[float, np.ndarray]] = []
     next_save = t0
-    for tick in iter_frames(video, t0, t1, fps=fps):
+    for tick in iter_frames(video, t0, t1, fps=fps, aspect_mode=aspect_mode):
         if stateless:
-            renderer = fixed_fit_renderer(fit)  # discard all history each frame
+            renderer = fixed_fit_renderer(fit, aspect_mode)  # discard all history each frame
         renderer.show(tick.frame, tick.t)
         if tick.t + 1e-6 >= next_save:
             saved.append((tick.t, renderer.render()))
             next_save += save_every
-    return saved
+    return saved, renderer.picture_mask
 
 
 def label(img: np.ndarray, text: str) -> np.ndarray:
@@ -108,6 +115,12 @@ def main() -> None:
         help="scale the per-pixel/per-cell hysteresis bonuses (1.0 = current default, "
         "0.0 = no hysteresis) applied to every persistent render",
     )
+    ap.add_argument(
+        "--aspect-mode",
+        choices=_ASPECT_MODE_CHOICES,
+        default=DEFAULT_ASPECT_MODE,
+        help="frame each picture as a scene's aspect_mode does (crop: runs before fit became the default)",
+    )
     ap.add_argument("--save-every", type=float, default=0.4, help="montage column spacing (s)")
     ap.add_argument("--cell-w", type=int, default=384, help="montage cell width px")
     args = ap.parse_args()
@@ -119,8 +132,10 @@ def main() -> None:
     # the comparison, so only the pick state differs between the renders.
     acc = ColorFitAccumulator()
     frames = 0
-    for tick in iter_frames(args.video, args.t0, args.t1, fps=args.fps):
-        acc.add(crop_to_aspect(tick.frame, ASPECT))
+    for tick in iter_frames(
+        args.video, args.t0, args.t1, fps=args.fps, aspect_mode=args.aspect_mode
+    ):
+        acc.add(tick.frame)
         frames += 1
     if not frames:
         raise SystemExit("no frames decoded in window")
@@ -134,8 +149,16 @@ def main() -> None:
     # per-cell code hysteresis) produces it. A longer-decaying deviation curve
     # after a cut = a longer-lived ghost.
     print("[render] stateless reference (fresh mode per frame)")
-    ref = render_sequence(
-        args.video, args.t0, args.t1, args.fps, 0.15, fit, args.save_every, stateless=True
+    ref, picture = render_sequence(
+        args.video,
+        args.t0,
+        args.t1,
+        args.fps,
+        0.15,
+        fit,
+        args.save_every,
+        stateless=True,
+        aspect_mode=args.aspect_mode,
     )
     ref_imgs = [im.astype(np.int16) for _, im in ref]
 
@@ -154,7 +177,7 @@ def main() -> None:
     rows = [row_of(ref, "stateless")]
     for alpha in alphas:
         print(f"[render] alpha={alpha}")
-        seq = render_sequence(
+        seq, _ = render_sequence(
             args.video,
             args.t0,
             args.t1,
@@ -163,9 +186,10 @@ def main() -> None:
             fit,
             args.save_every,
             hyst_scale=args.hyst_scale,
+            aspect_mode=args.aspect_mode,
         )
         metrics[alpha] = [
-            float(np.mean(np.abs(im.astype(np.int16) - r)))
+            float(np.mean(np.abs(im.astype(np.int16) - r)[picture]))
             for (_, im), r in zip(seq, ref_imgs, strict=True)
         ]
         rows.append(row_of(seq, f"a={alpha:.2f}"))

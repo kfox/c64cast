@@ -29,8 +29,11 @@ assembles one from arriving packets.
 pixels, but a C64 pixel is not square, so the screen is seen at 1.2:1 on an
 NTSC set, 4:3 from an NTSC Ultimate 64's HDMI output, and 1.5:1 in PAL.
 `[hardware].pixel_aspect` says which one you are watching. `crop` center-crops to fill and
-loses the margins; `fit` letterboxes onto black; `stretch` distorts. Camera
-and video always crop. A slideshow chooses with `aspect_mode`.
+loses the margins; `fit` letterboxes onto black; `hybrid` crops halfway
+between the source's shape and the screen's and letterboxes the rest;
+`stretch` distorts. A camera always crops. A video or a slideshow chooses with
+`aspect_mode`, and fits unless told otherwise. The black bars are added after the color statistics are read,
+so they never darken the picture's fitted levels.
 
 **3. The effect chain runs.** Each layer transforms the frame in order, at
 source resolution, before anything about the Commodore has been decided. This
