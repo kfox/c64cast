@@ -450,6 +450,21 @@ cut, structure from the previous shot lingers for a moment as an after-image.
 Lower it if after-images bother you; raise it if motion shimmers. It affects
 nothing outside `mhires` with `palette_mode = "percell"`.
 
+### `flat_stickiness`
+
+The bias that keeps a pixel on last frame's color is the same everywhere, but
+it is needed most where the picture is flat: grain on a wall or a sky that sits
+between two palette colors churns into pools of shifting color, while an edge
+has to follow motion. `[color].flat_stickiness`, on by default, holds a pixel
+up to four times as firmly on a flat area as on an edge, judged from the
+picture's brightness edges. A pixel still moves once the source sits on a new
+palette color. The price is a slow fade across a flat area, which can trail
+the source for a second or two.
+
+It scales the bias `motion_smoothing` sets, so it does nothing at
+`motion_smoothing = 0`, and like that dial it affects only `mhires` with
+`palette_mode = "percell"`. Set it to `false` to hold every pixel equally.
+
 ### `input_smoothing`
 
 Grain on a flat area that sits between two palette colors flips its pixels

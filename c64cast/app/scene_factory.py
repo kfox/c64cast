@@ -416,6 +416,7 @@ def _build_display_mode(
             channel_boost=channel_boost,
             dark_tone_taper=color.dark_tone_taper,
             gray_penalty=color.gray_penalty,
+            flat_stickiness=color.flat_stickiness,
             hue_corrections=hue_corrections,
             hue_corrections_replace=hue_corrections_replace,
             force_palette=force_palette,
