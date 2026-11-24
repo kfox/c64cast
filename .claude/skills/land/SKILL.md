@@ -1,16 +1,16 @@
 ---
-name: ship
+name: land
 description: >
   Take a change in this repository all the way to a pull request that is ready
   to merge: branch, implement, commit, review each change once at an effort set
   by its size and risk, open the PR as a draft, watch CI and GHAS until green,
   then mark it ready for review. Stops before merging — the merge is always the
   user's. Use when asked to implement a non-trivial change, or when asked to
-  take a change through the full branch-review-PR workflow ("ship", "land",
+  take a change through the full branch-review-PR workflow ("land", "ship",
   "take this to a PR").
 ---
 
-# Ship a change
+# Land a change
 
 The standard workflow for non-trivial work in this repository. Every stage is
 mandatory unless the user says otherwise, and the last one is a hard stop.
