@@ -2068,7 +2068,10 @@ class ColorCfg:
             "Video and slideshow scenes only, "
             "since they can see their content first. Needs an Ultimate 64 on "
             "firmware 3.15a or newer or a C64 Ultimate on 1.2.1 or newer; elsewhere it is skipped with a warning. "
-            "Cannot be combined with force_palette or flicker_tolerance.",
+            "Cannot be combined with force_palette or flicker_tolerance. "
+            "'auto' is 'source' wherever it can be: it is quietly off on a "
+            "machine that cannot push colors and on a scene using "
+            "force_palette or flicker_tolerance. Quick playback defaults to 'auto'.",
             "choices": HARDWARE_PALETTE_CHOICES,
         },
     )

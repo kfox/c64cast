@@ -12,10 +12,13 @@ from collections import deque
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import cast
+from typing import TYPE_CHECKING, cast
 
 import cv2
 import numpy as np
+
+if TYPE_CHECKING:
+    from c64cast.app.config import ColorCfg
 
 log = logging.getLogger(__name__)
 
@@ -1489,12 +1492,20 @@ def suggest_palette(samples_lab: np.ndarray, max_k: int = 16) -> list[tuple[int,
 # gray axis stays the machine's own: fades end on index 0, cards and overlays
 # draw in 0 and 1, and the gray penalty and grayscale mode are written against
 # those five indices. The other eleven are re-chosen from the source.
-HARDWARE_PALETTE_CHOICES: tuple[str, ...] = ("off", "source")
+HARDWARE_PALETTE_CHOICES: tuple[str, ...] = ("off", "source", "auto")
 # The scene types that can see their content before they paint it.
 HARDWARE_PALETTE_SCENE_TYPES: tuple[str, ...] = ("video", "slideshow")
 HARDWARE_PALETTE_PINNED = GRAY_INDICES
 _HARDWARE_PALETTE_FREE = tuple(i for i in range(16) if i not in HARDWARE_PALETTE_PINNED)
 _HARDWARE_PALETTE_ITERATIONS = 20
+
+
+def wants_hardware_palette(color: ColorCfg) -> bool:
+    """Whether `color` has its scene push its own palette. "auto" yields to
+    force_palette and flicker_tolerance, which "source" refuses at load."""
+    if color.hardware_palette == "auto":
+        return not color.force_palette and color.flicker_tolerance == "off"
+    return color.hardware_palette == "source"
 
 
 class FrameSampler:
