@@ -1611,6 +1611,15 @@ def derive_hardware_palette(
     return out
 
 
+def hardware_palette_error(frame_bgr: np.ndarray, table_bgr: np.ndarray) -> float:
+    """How far `frame_bgr`'s pixels sit from their nearest of the 16 colors
+    in `table_bgr`: the mean Lab distance, over every fourth pixel."""
+    lab = _bgr_to_lab(np.asarray(frame_bgr, dtype=np.float32).reshape(-1, 3)[::4])
+    centers = _bgr_to_lab(np.asarray(table_bgr, dtype=np.float32).reshape(16, 3))
+    d = (lab**2).sum(axis=1)[:, None] - 2.0 * lab @ centers.T + (centers**2).sum(axis=1)
+    return float(np.sqrt(np.maximum(d.min(axis=1), 0.0)).mean())
+
+
 def _nearest_center(samples: np.ndarray, centers: np.ndarray) -> np.ndarray:
     d = (samples**2).sum(axis=1)[:, None] - 2.0 * samples @ centers.T + (centers**2).sum(axis=1)
     return np.argmin(d, axis=1)

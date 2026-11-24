@@ -283,3 +283,56 @@ def set_palette_rgb(bus: MemoryBus, colors: Sequence[Sequence[int]]) -> bool:
         log.debug("UCI: set-palette answered %r", bytes(status[:40]))
         return False
     return True
+
+
+# A split, blind palette push for changing colors at a video's shot cuts:
+# `load_palette` fills the FIFO ahead of the cut, `go` raises PUSH_CMD with
+# the cut frame's writes, and `ack` hands the interface back. None of the
+# three reads anything: REST reads are what wedge an Ultimate when they come
+# fast, and a machine that took 83 blind pushes in a row was idle before
+# every one of them. The scene's own first push (`set_palette_rgb`) is the
+# transaction that checks.
+#
+# On a C64 Ultimate every DMA command costs ~7 ms, so the 50 FIFO bytes sent
+# as one burst hold the link for ~340 ms and the audio sampler's ring writes
+# stop landing behind them. Five bytes a flush, 100 ms apart, never did.
+LOAD_CHUNK_BYTES = 5
+LOAD_GAP_S = 0.1
+# The firmware leaves BUSY within a few ms of PUSH_CMD for a palette.
+ACK_DELAY_S = 0.05
+
+
+def load_palette(
+    bus: MemoryBus, colors: Sequence[Sequence[int]], *, stop: Callable[[], bool]
+) -> bool:
+    """Put a set-palette command for `colors` into the FIFO without pushing
+    it. False when `stop` said to give up partway; the caller then owes the
+    interface an `abort`, since a half-loaded FIFO would prefix the next
+    command."""
+    if len(colors) != PALETTE_COLORS or any(len(c) != 3 for c in colors):
+        raise ValueError(f"a palette is {PALETTE_COLORS} RGB triples")
+    fifo = (TARGET_CONTROL, CMD_SET_PALETTE, *(int(v) & 0xFF for c in colors for v in c))
+    for i in range(0, len(fifo), LOAD_CHUNK_BYTES):
+        if stop():
+            return False
+        for value in fifo[i : i + LOAD_CHUNK_BYTES]:
+            _write_byte(bus, UCI_COMMAND, value)
+        bus.flush()
+        time.sleep(LOAD_GAP_S)
+    return True
+
+
+def go(bus: MemoryBus) -> None:
+    """Run the loaded command. Not flushed, so a caller that writes it after
+    a frame's writes has the colors change on the frame that needs them."""
+    _write_byte(bus, UCI_CONTROL, CONTROL_PUSH_CMD)
+
+
+def ack(bus: MemoryBus) -> None:
+    """Accept the answer of the command `go` ran, unread."""
+    _write_control(bus, CONTROL_NEXT_DATA)
+
+
+def abort(bus: MemoryBus) -> None:
+    """Drop a loaded command, or the answer of one that ran."""
+    _write_control(bus, CONTROL_ABORT)

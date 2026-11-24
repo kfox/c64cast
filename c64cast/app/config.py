@@ -2072,6 +2072,18 @@ class ColorCfg:
             "choices": HARDWARE_PALETTE_CHOICES,
         },
     )
+    hardware_palette_shots: bool = field(
+        default=True,
+        metadata={
+            "help": "With hardware_palette = 'source', give each shot of a video "
+            "its own 16 colors instead of one set for the whole video: they are "
+            "fitted to the shot's first two seconds while it waits in the decode "
+            "buffer and change on its first frame. A new set also comes where "
+            "the picture drifts away from the current one, as in a dissolve. "
+            "Shots shorter than 1.3 s keep the colors of the shot before. Video "
+            "scenes only."
+        },
+    )
     dither: str = field(
         default="auto",
         metadata={

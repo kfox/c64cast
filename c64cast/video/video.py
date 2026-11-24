@@ -34,6 +34,7 @@ from c64cast.audio.audio_handlers import DAC_VOLUME_SCALE, INT16_FULL_SCALE, INT
 
 from .aspect import crop_for_mode, kept_aspect, pads
 from .palette import ColorFit, ColorFitAccumulator, ColorMap, ColorMapAccumulator, FrameSampler
+from .palette_shots import PaletteShot, PaletteShotTracker
 from .shots import ShotFit, ShotTracker
 
 # Audio is fed toward the sink on the picture's timeline: a packet that starts
@@ -1275,10 +1276,10 @@ class AVFileSource:
         # PTS-sorted decoded video frames: (pts_seconds, BGR np.ndarray)
         self._video_buf: list[tuple[float, np.ndarray]] = []
         # Set by VideoScene before the demuxer starts; None skips the work.
-        self.shot_tracker: ShotTracker | None = None
+        self.shot_tracker: ShotTracker | PaletteShotTracker | None = None
         # Shot cuts among the buffered frames, by the cut frame's pts.
-        self._shot_marks: dict[float, ShotFit] = {}
-        self._shot_due: ShotFit | None = None
+        self._shot_marks: dict[float, ShotFit | PaletteShot] = {}
+        self._shot_due: ShotFit | PaletteShot | None = None
         self._shown_frame: np.ndarray | None = None
         self._lock = threading.Lock()
         # Wakes a demux thread parked at EOF (_await_seek_after_eof) when a
@@ -2323,9 +2324,10 @@ class AVFileSource:
                 del self._video_buf[:consumed_through]
             return chosen_img
 
-    def take_shot(self) -> ShotFit | None:
-        """The fit of a shot whose first frame `current_frame` has returned
-        or passed since the last call, or None. With several, the latest."""
+    def take_shot(self) -> ShotFit | PaletteShot | None:
+        """What the shot tracker marked at a shot whose first frame
+        `current_frame` has returned or passed since the last call, or None.
+        With several, the latest."""
         with self._lock:
             shot, self._shot_due = self._shot_due, None
             return shot
