@@ -35,7 +35,7 @@ import time
 from abc import abstractmethod
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
-from typing import TYPE_CHECKING, Any, Literal, NamedTuple
+from typing import Any, Literal, NamedTuple
 from urllib.parse import quote, urlparse
 
 import requests
@@ -79,9 +79,6 @@ from .socket_dma import (
     encode_password,
 )
 from .vic_stream import VicStreamReceiver
-
-if TYPE_CHECKING:
-    from .hardware_palette import HardwarePalette
 
 __all__ = [
     "Ultimate64API",
@@ -1712,10 +1709,6 @@ def _names_an_error(body: bytes | requests.Response) -> bool:
 
 
 class Ultimate64API(_SidPlayerMixin, _StubRunnerBackend):
-    # Set by `hardware_palette.provision_hardware_palette` for a run that pushes
-    # palettes; the scenes that push read it from here.
-    hardware_palette: HardwarePalette | None = None
-
     def __init__(
         self,
         base_url: str,

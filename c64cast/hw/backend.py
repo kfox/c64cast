@@ -39,6 +39,7 @@ from .c64 import DEFAULT_DAC_SAMPLE_RATE, KERNAL, SCREEN, SID, VECTORS, VIC
 if TYPE_CHECKING:
     from c64cast.app.config import Config
 
+    from .hardware_palette import HardwarePalette
     from .menu_screen import MenuScreen
 
 log = logging.getLogger(__name__)
@@ -454,6 +455,9 @@ class C64Backend(ABC):
 
     #: Set by every concrete backend in __init__.
     profile: HardwareProfile
+    #: Set by `hardware_palette.provision_hardware_palette` for a run that
+    #: pushes palettes; the scenes that push read it from here.
+    hardware_palette: HardwarePalette | None = None
 
     @abstractmethod
     def write_memory(self, address: str, data_hex: str) -> None: ...

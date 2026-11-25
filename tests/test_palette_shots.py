@@ -12,7 +12,13 @@ from unittest import mock
 
 import numpy as np
 from _fakes import mock_backend
-from test_hardware_palette import MACHINE, PaletteSwapTestCase, _FakeApi, _warm_image
+from test_hardware_palette import (
+    MACHINE,
+    PaletteSwapTestCase,
+    _FakeApi,
+    _mock_control,
+    _warm_image,
+)
 from test_uci import PALETTE_BYTES, PALETTE_RGB, _FakeUltimate
 
 from c64cast.hw import hardware_palette as hp
@@ -104,9 +110,11 @@ class _Recorder:
         self.ready.append(shot)
 
 
-def _track(frames) -> tuple[list[float], _Recorder, ps.PaletteShotTracker]:
+def _track(
+    frames, min_stretch_s: float = 1.3
+) -> tuple[list[float], _Recorder, ps.PaletteShotTracker]:
     rec = _Recorder()
-    tracker = ps.PaletteShotTracker(lambda f: f, rec)
+    tracker = ps.PaletteShotTracker(lambda f: f, rec, min_stretch_s=min_stretch_s)
     starts = []
     for i, f in enumerate(frames):
         found = tracker.observe(i / FPS, f)
@@ -136,6 +144,16 @@ class PaletteShotTrackerTest(unittest.TestCase):
     def test_a_shot_shorter_than_a_load_keeps_the_colors_before(self):
         starts, _, _ = _track(_frames((RED, 3), (BLUE, 1), (RED, 3)))
         self.assertEqual(starts, [0.0, 3.0])
+
+    def test_the_shortest_stretch_follows_the_writers_load_time(self):
+        frames = _frames((RED, 3), (BLUE, 1), (RED, 3))
+        quick = ps.min_stretch_s(0.02)
+        starts, _, _ = _track(frames, min_stretch_s=quick)
+        self.assertEqual(starts, [0.0, 3.0, 4.0])
+
+    def test_min_stretch_s_covers_the_load_and_keeps_a_floor(self):
+        self.assertAlmostEqual(ps.min_stretch_s(hp.UltimatePaletteWriter.load_time_s), 1.3)
+        self.assertEqual(ps.min_stretch_s(0.02), ps.MIN_STRETCH_FLOOR_S)
 
     def test_a_short_shot_is_handed_over_with_the_frames_it_has(self):
         _, rec, tracker = _track(_frames((RED, 1.5), (BLUE, 3)))
@@ -179,6 +197,9 @@ class PaletteShotTrackerTest(unittest.TestCase):
 
 class _FakeControl:
     """The HardwarePalette surface ShotPusher drives, recording the order."""
+
+    channel_bits = 8
+    ack_delay_s = uci.ACK_DELAY_S
 
     def __init__(self) -> None:
         self.machine_palette = MACHINE.copy()
@@ -303,6 +324,27 @@ class ShotPusherTest(unittest.TestCase):
         assert fit is not None
         np.testing.assert_array_equal(self.control.adopted[0], fit[0])
 
+    def test_a_table_is_fitted_to_the_bits_its_machine_shows(self):
+        self.control.channel_bits = 6
+        shot = _shot(RED, 0.0)
+        self.pusher.ready(shot)
+        self.assertTrue(self.pusher.wait_loaded(5.0))
+        fit = shot.fit
+        assert fit is not None
+        shown = {round(q * 255 / 63) for q in range(64)}
+        self.assertLessEqual(set(np.unique(fit[0]).tolist()), shown)
+
+    def test_the_ack_waits_the_writers_ack_delay(self):
+        self.control.ack_delay_s = 30.0
+        shot = _shot(RED, 0.0)
+        self.pusher.ready(shot)
+        self.assertTrue(self.pusher.wait_loaded(5.0))
+        self.pusher.before_render(shot)
+        self.pusher.after_render()
+        self.assertTrue(_until(lambda: "go" in self.control.calls))
+        time.sleep(0.2)
+        self.assertNotIn("ack", self.control.calls)
+
     def test_a_failed_load_is_aborted_and_not_pushed(self):
         self.control.load_ok = False
         shot = _shot(RED, 0.0)
@@ -343,7 +385,8 @@ class BlindControlTest(PaletteSwapTestCase):
         super().setUp()
         palette.set_host_palette(palette.C64_WIKI_PALETTE_BGR, name="c64-wiki")
         self.api = _FakeApi()
-        self.control = hp.HardwarePalette(cast(Ultimate64API, self.api), MACHINE)
+        api = cast(Ultimate64API, self.api)
+        self.control = hp.HardwarePalette(api, hp.UltimatePaletteWriter(api), MACHINE)
         self.table = MACHINE.copy()
         self.table[8] = (30, 95, 175)
 
@@ -416,8 +459,7 @@ class VideoShotWiringTest(unittest.TestCase):
         from c64cast.app.config import ColorCfg
         from c64cast.scenes.scenes import VideoScene
 
-        self.control = mock.Mock(spec=hp.HardwarePalette)
-        self.control.machine_palette = MACHINE.copy()
+        self.control = _mock_control()
         api = mock_backend()
         api.hardware_palette = self.control
         self.mode = mock.MagicMock()
@@ -455,6 +497,22 @@ class VideoShotWiringTest(unittest.TestCase):
         self.scene.teardown()
         self.assertIsNone(self.scene._shot_pusher)
         self.assertFalse(pusher._thread.is_alive())
+
+    def test_the_shortest_stretch_is_the_ultimates(self):
+        with self.assertLogs("c64cast.scenes.scenes", level="INFO"):
+            self.scene.setup()
+        self.addCleanup(self.scene.teardown)
+        source = self.scene.source
+        assert source is not None
+        tracker = source.shot_tracker
+        assert isinstance(tracker, ps.PaletteShotTracker)
+        frames = _frames((RED, 3), (BLUE, 1), (RED, 3))
+        starts = []
+        for i, f in enumerate(frames):
+            found = tracker.observe(i / FPS, f)
+            if found is not None:
+                starts.append(found[0])
+        self.assertEqual(starts, [0.0, 3.0])
 
     def test_shots_are_fitted_to_the_whole_picture_the_demux_thread_kept(self):
         # The demux thread hands the tracker what aspect_mode keeps; "fit"
