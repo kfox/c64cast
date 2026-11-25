@@ -7,6 +7,7 @@ from __future__ import annotations
 import threading
 import time
 import unittest
+from functools import partial
 from typing import cast
 from unittest import mock
 
@@ -27,6 +28,12 @@ from c64cast.hw.api import Ultimate64API
 from c64cast.video import palette
 from c64cast.video import palette_shots as ps
 from c64cast.video.modes import BitmapDisplayMode
+from c64cast.video.modes_irq import (
+    KAWARI_PALETTE_CUE,
+    PALETTE_CUE_STATE_ADDR,
+    PALETTE_CUE_STATE_LEN,
+    ULTIMATE_PALETTE_CUE,
+)
 
 FPS = 25.0
 
@@ -230,7 +237,6 @@ class _FakeControl:
     """The HardwarePalette surface ShotPusher drives, recording the order."""
 
     channel_bits = 8
-    ack_delay_s = uci.ACK_DELAY_S
 
     def __init__(self) -> None:
         self.machine_palette = MACHINE.copy()
@@ -238,6 +244,13 @@ class _FakeControl:
         self.adopted: list[np.ndarray] = []
         self.load_ok = True
         self.adopt_ok = True
+        self.ack_wait_s = uci.ACK_DELAY_S
+        # Each call's `cued`, so a test sees which way the pusher drove it.
+        self.cued: list[bool] = []
+
+    def ack_delay_s(self, cued: bool) -> float:
+        self.cued.append(cued)
+        return self.ack_wait_s
 
     def load(self, table, stop) -> bool:
         self.calls.append("load")
@@ -248,13 +261,16 @@ class _FakeControl:
         self.adopted.append(table)
         return self.adopt_ok
 
-    def go(self) -> None:
+    def go(self, cued: bool) -> None:
+        self.cued.append(cued)
         self.calls.append("go")
 
-    def ack(self) -> None:
+    def ack(self, cued: bool) -> None:
+        self.cued.append(cued)
         self.calls.append("ack")
 
-    def abort(self) -> None:
+    def abort(self, cued: bool) -> None:
+        self.cued.append(cued)
         self.calls.append("abort")
 
 
@@ -276,6 +292,19 @@ class CueingShotPusherTest(unittest.TestCase):
         self.assertTrue(self.pusher.wait_loaded(5.0))
         self.assertTrue(self.pusher.before_render(shot))
         self.assertEqual(self.control.calls, ["load", "adopt", "cue"])
+
+    def test_the_writer_is_told_the_push_is_cued(self):
+        shot = _shot(RED, 0.0)
+        self.pusher.ready(shot)
+        self.assertTrue(self.pusher.wait_loaded(5.0))
+        self.pusher.before_render(shot)
+        self.pusher.after_render()
+        self.assertTrue(_until(lambda: "ack" in self.control.calls))
+        self.pusher.ready(_shot(BLUE, 3.0))
+        self.assertTrue(_until(lambda: self.control.calls.count("load") == 2))
+        self.pusher.stop()
+        self.assertIn("abort", self.control.calls)
+        self.assertEqual(set(self.control.cued), {True})
 
     def test_a_frame_without_a_push_is_not_cued(self):
         shot = _shot(RED, 0.0)
@@ -327,6 +356,19 @@ class ShotPusherTest(unittest.TestCase):
         np.testing.assert_array_equal(self.control.adopted[0], fit[0])
         self.pusher.after_render()
         self.assertTrue(_until(lambda: self.control.calls == ["load", "adopt", "go", "ack"]))
+
+    def test_the_writer_is_told_the_push_is_not_cued(self):
+        shot = _shot(RED, 0.0)
+        self.pusher.ready(shot)
+        self.assertTrue(self.pusher.wait_loaded(5.0))
+        self.pusher.before_render(shot)
+        self.pusher.after_render()
+        self.assertTrue(_until(lambda: "ack" in self.control.calls))
+        self.pusher.ready(_shot(BLUE, 3.0))
+        self.assertTrue(_until(lambda: self.control.calls.count("load") == 2))
+        self.pusher.stop()
+        self.assertIn("abort", self.control.calls)
+        self.assertEqual(set(self.control.cued), {False})
 
     def test_the_next_table_loads_only_after_the_ack(self):
         first, second = _shot(RED, 0.0), _shot(BLUE, 3.0)
@@ -402,7 +444,7 @@ class ShotPusherTest(unittest.TestCase):
         self.assertLessEqual(set(np.unique(fit[0]).tolist()), shown)
 
     def test_the_ack_waits_the_writers_ack_delay(self):
-        self.control.ack_delay_s = 30.0
+        self.control.ack_wait_s = 30.0
         shot = _shot(RED, 0.0)
         self.pusher.ready(shot)
         self.assertTrue(self.pusher.wait_loaded(5.0))
@@ -422,7 +464,7 @@ class ShotPusherTest(unittest.TestCase):
     def test_no_table_loads_between_the_push_and_its_ack(self):
         later = _shot(BLUE, 3.0)
 
-        def go_while_the_next_stretch_comes_in():
+        def go_while_the_next_stretch_comes_in(cued: bool):
             self.control.calls.append("go")
             self.pusher.ready(later)
             _until(lambda: self.control.calls.count("load") == 2, timeout_s=0.5)
@@ -476,6 +518,52 @@ class BlindControlTest(PaletteSwapTestCase):
             with self.assertLogs("c64cast.hw.hardware_palette", level="INFO"):
                 self.control.restore()
         push.assert_called_once()
+
+
+class UltimateWriterCueTest(unittest.TestCase):
+    """A cued push is run and answered by the swap IRQ, so the host sends
+    neither; withdrawing it clears the cue before the C64 can act on it."""
+
+    def setUp(self):
+        self.bus = mock.Mock(spec=uci.MemoryBus)
+        self.writer = hp.UltimatePaletteWriter(cast(Ultimate64API, self.bus))
+
+    def _writes(self) -> list[tuple[str, str]]:
+        return [c.args for c in self.bus.write_memory.call_args_list]
+
+    def test_a_cued_go_and_ack_send_nothing(self):
+        self.writer.go(True)
+        self.writer.ack(True)
+        self.assertEqual(self._writes(), [])
+
+    def test_an_uncued_go_and_ack_drive_the_interface(self):
+        self.writer.go(False)
+        self.writer.ack(False)
+        self.assertEqual(
+            self._writes(),
+            [
+                (f"{uci.UCI_CONTROL:04X}", f"{uci.CONTROL_PUSH_CMD:02X}"),
+                (f"{uci.UCI_CONTROL:04X}", f"{uci.CONTROL_NEXT_DATA:02X}"),
+            ],
+        )
+
+    def test_a_cued_abort_withdraws_the_cue_before_the_abort(self):
+        self.writer.abort(True)
+        self.assertEqual(
+            self._writes(),
+            [
+                (f"{PALETTE_CUE_STATE_ADDR:04X}", bytes(PALETTE_CUE_STATE_LEN).hex()),
+                (f"{uci.UCI_CONTROL:04X}", f"{uci.CONTROL_ABORT:02X}"),
+            ],
+        )
+
+    def test_an_uncued_abort_leaves_the_cue_alone(self):
+        self.writer.abort(False)
+        self.assertEqual(self._writes(), [(f"{uci.UCI_CONTROL:04X}", f"{uci.CONTROL_ABORT:02X}")])
+
+    def test_a_cued_ack_waits_past_the_commit(self):
+        self.assertGreater(self.writer.ack_delay_s(True), hp.ARM_TO_COMMIT_S)
+        self.assertEqual(self.writer.ack_delay_s(False), uci.ACK_DELAY_S)
 
 
 class FrameRenderPushTest(unittest.TestCase):
@@ -615,21 +703,49 @@ class VideoShotWiringTest(unittest.TestCase):
         self.assertIsNone(self.scene._shot_pusher)
         self.scene.teardown()
 
-    def test_a_kawari_is_handed_the_double_buffers_cue(self):
+    def _cueing_mode(self) -> mock.MagicMock:
         mode = mock.MagicMock(spec=BitmapDisplayMode)
         mode.quantizer_input.side_effect = lambda img: img
-        mode.cues_palette_copies = True
+        mode.cues_palette_changes = True
         self.scene.display_mode = mode
-        self.control.cues_frames = True
+        return mode
+
+    def _as_kawari(self) -> None:
+        self.control.frame_cue = KAWARI_PALETTE_CUE
+        self.control.goes_from_host = False
+
+    def _assert_cued_with(self, mode: mock.MagicMock, cue: int) -> None:
+        pusher = self.scene._shot_pusher
+        assert pusher is not None
+        assert isinstance(pusher._cue, partial)
+        self.assertEqual((pusher._cue.func, pusher._cue.args), (mode.cue_palette_change, (cue,)))
+
+    def test_a_kawari_is_handed_the_double_buffers_cue(self):
+        mode = self._cueing_mode()
+        self._as_kawari()
+        with self.assertLogs("c64cast.scenes.scenes", level="INFO"):
+            self.scene.setup()
+        self.addCleanup(self.scene.teardown)
+        self._assert_cued_with(mode, KAWARI_PALETTE_CUE)
+
+    def test_an_ultimate_is_handed_the_double_buffers_cue(self):
+        mode = self._cueing_mode()
+        with self.assertLogs("c64cast.scenes.scenes", level="INFO"):
+            self.scene.setup()
+        self.addCleanup(self.scene.teardown)
+        self._assert_cued_with(mode, ULTIMATE_PALETTE_CUE)
+
+    def test_an_ultimate_without_a_double_buffer_goes_from_the_host(self):
+        self.mode.name = "petscii"
         with self.assertLogs("c64cast.scenes.scenes", level="INFO"):
             self.scene.setup()
         self.addCleanup(self.scene.teardown)
         pusher = self.scene._shot_pusher
         assert pusher is not None
-        self.assertEqual(pusher._cue, mode.cue_palette_copy)
+        self.assertIsNone(pusher._cue)
 
     def test_a_kawari_without_a_double_buffer_keeps_one_palette(self):
-        self.control.cues_frames = True
+        self._as_kawari()
         self.mode.name = "petscii"
         with self.assertLogs("c64cast.scenes.scenes", level="INFO") as cm:
             self.scene.setup()

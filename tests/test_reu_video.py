@@ -28,7 +28,7 @@ from _fakes import FakeAPI, quiet_logging
 from c64cast.app.config import Config, VideoCfg
 from c64cast.app.scene_factory import _build_display_mode
 from c64cast.audio.audio_handlers import REU_PUMP_BODY_SUBROUTINE_ADDR
-from c64cast.hw import kawari
+from c64cast.hw import kawari, uci
 from c64cast.hw.api import Ultimate64API
 from c64cast.hw.backend import HardwareProfile
 from c64cast.hw.c64 import (
@@ -1530,6 +1530,7 @@ class BankSwapDispatcherExecutionTest(unittest.TestCase):
             self.mem.subscribe_to_write([REU.COMMAND], self._trigger)
             self.mem.subscribe_to_write([CIA2.PORT_A], self._register("dd00"))
             self.mem.subscribe_to_write([0xD021], self._register("d021"))
+            self.mem.subscribe_to_write([uci.UCI_CONTROL], self._register("uci"))
             self.mem.subscribe_to_write(
                 range(kawari.VIDEO_MEM_1_ADDR, kawari.VIDEO_MEM_1_VAL + 1), self._kawari
             )
@@ -1567,11 +1568,11 @@ class BankSwapDispatcherExecutionTest(unittest.TestCase):
 
         sources: list[int]
 
-        def stage(self, slot, *, bg0=0, cue=False):
+        def stage(self, slot, *, bg0=0, cue=0):
             """Write a tracker as the host does: one blob, ready flag last,
-            with the palette cue ahead of it when `cue`."""
+            with the palette cue byte `cue` ahead of it when it is nonzero."""
             if cue:
-                self.mem[modes_irq.PALETTE_CUE_ADDR] = 1
+                self.mem[modes_irq.PALETTE_CUE_ADDR] = cue
             if self.mhires:
                 blob = bytearray(MHIRES_FRAME_TRACKER_LEN)
                 regs = (
@@ -1788,7 +1789,7 @@ class BankSwapDispatcherExecutionTest(unittest.TestCase):
         for name, handler, mhires, _ in self.CASES:
             with self.subTest(mode=name):
                 m = self.Machine(self, handler, mhires=mhires)
-                m.stage(slot=0, cue=True)
+                m.stage(slot=0, cue=modes_irq.KAWARI_PALETTE_CUE)
                 _, log, _ = m.irq(line=self.OUT_OF_WINDOW)
                 self.assertNotIn("kawari", [kind for kind, _, _ in log])
                 self.assertEqual(self._cue_bytes(m), [1, 0], "the snapshot did not take the cue")
@@ -1797,6 +1798,23 @@ class BankSwapDispatcherExecutionTest(unittest.TestCase):
                 self.assertLess(kinds.index("dd00"), kinds.index("kawari"))
                 self.assertEqual([e for e in log if e[0] == "kawari"], self.PALETTE_COPY)
                 self.assertEqual(self._cue_bytes(m), [0, 0])
+
+    def test_an_ultimate_cued_frame_pushes_the_loaded_command_in_its_commit(self):
+        for name, handler, mhires, _ in self.CASES:
+            with self.subTest(mode=name):
+                m = self.Machine(self, handler, mhires=mhires)
+                m.stage(slot=0, cue=modes_irq.ULTIMATE_PALETTE_CUE)
+                _, log, _ = m.irq(line=self.OUT_OF_WINDOW)
+                self.assertNotIn("uci", [kind for kind, _, _ in log])
+                log = self._show(m)
+                kinds = [kind for kind, _, _ in log]
+                self.assertLess(kinds.index("dd00"), kinds.index("uci"))
+                self.assertEqual(
+                    [e for e in log if e[0] == "uci"], [("uci", uci.CONTROL_PUSH_CMD, 0)]
+                )
+                self.assertNotIn("kawari", kinds)
+                self.assertEqual(self._cue_bytes(m), [0, 0])
+                self.assertNotEqual(m.mem[modes_irq._ANSWER_PENDING], 0)
 
     def test_an_uncued_frame_starts_no_copy(self):
         for name, handler, mhires, _ in self.CASES:
@@ -1813,7 +1831,7 @@ class BankSwapDispatcherExecutionTest(unittest.TestCase):
                 m = self.Machine(self, handler, mhires=mhires)
                 m.stage(slot=0)
                 m.irq(line=self.OUT_OF_WINDOW)
-                m.stage(slot=1, cue=True)
+                m.stage(slot=1, cue=modes_irq.KAWARI_PALETTE_CUE)
                 log = self._show(m)
                 self.assertNotIn("kawari", [kind for kind, _, _ in log], "copied with frame 0")
                 self.assertEqual(sum(self._cue_bytes(m)), 1, "the cue was lost")

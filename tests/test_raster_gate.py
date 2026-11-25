@@ -14,6 +14,8 @@ from __future__ import annotations
 import unittest
 from collections.abc import Callable
 
+from _handler_shape import exit_branches
+
 from c64cast.hw import kawari
 from c64cast.hw.c64 import (
     D018_HIRES_PAGE_A,
@@ -21,6 +23,8 @@ from c64cast.hw.c64 import (
     RASTER_COMMIT_LAST_SAFE_LINE,
     RASTER_VBLANK_LINE,
 )
+from c64cast.hw.uci import CONTROL_PUSH_CMD, UCI_CONTROL
+from c64cast.video.modes_irq import _ANSWER_PENDING as ANSWER_PENDING
 from c64cast.video.modes_irq import (
     BANK_SWAP_IRQ_HANDLER_ADDR,
     COMMIT_REPORT_ADDR,
@@ -36,6 +40,7 @@ from c64cast.video.modes_irq import (
     HOSTDMA_TRACKER_OFF_READY,
     PAGE_FLIP_COMMIT_LAST_SAFE_LINE,
     PALETTE_CUE_ADDR,
+    ULTIMATE_PALETTE_CUE,
 )
 
 BG0 = 0x05
@@ -65,6 +70,7 @@ class _HandlerHarness:
     TRACKER: list[int]
     # From the unittest.TestCase each concrete harness also inherits.
     assertEqual: Callable[..., None]
+    assertNotEqual: Callable[..., None]
 
     def _memory(self):
         from py65.memory import ObservableMemory
@@ -142,6 +148,33 @@ class _HandlerHarness:
         writes = self._watch_kawari(mem)
         self._run_field(mem, RASTER_VBLANK_LINE)
         self.assertEqual(writes, [(0xDD00, DD00_BANK_2)])
+
+    def _watch_ultimate(self, mem) -> list[tuple[int, int]]:
+        """Every $DD00 write and UCI control write, in order."""
+        writes: list[tuple[int, int]] = []
+        mem.subscribe_to_write([0xDD00, UCI_CONTROL], lambda a, v: writes.append((a, v)))
+        return writes
+
+    def test_an_ultimate_cued_frame_pushes_the_loaded_command_after_its_flip(self):
+        mem = self._memory()
+        self._stage(mem)
+        mem[PALETTE_CUE_ADDR] = ULTIMATE_PALETTE_CUE
+        writes = self._watch_ultimate(mem)
+        kawari_writes = self._watch_kawari(mem)
+        self._run_field(mem, RASTER_VBLANK_LINE)
+        self.assertEqual(writes, [(0xDD00, DD00_BANK_2), (UCI_CONTROL, CONTROL_PUSH_CMD)])
+        self.assertEqual(kawari_writes, [(0xDD00, DD00_BANK_2)])
+        self.assertEqual(mem[PALETTE_CUE_ADDR], 0)
+        self.assertNotEqual(mem[ANSWER_PENDING], 0, "the push left no answer to accept")
+
+    def test_a_deferred_ultimate_cue_pushes_nothing(self):
+        mem = self._memory()
+        self._stage(mem)
+        mem[PALETTE_CUE_ADDR] = ULTIMATE_PALETTE_CUE
+        writes = self._watch_ultimate(mem)
+        self._run_field(mem, 128)
+        self.assertEqual(writes, [])
+        self.assertEqual(mem[PALETTE_CUE_ADDR], ULTIMATE_PALETTE_CUE)
 
 
 class HostdmaGateTest(_HandlerHarness, unittest.TestCase):
@@ -273,10 +306,6 @@ class GateShapeTest(unittest.TestCase):
     def test_every_branch_targets_the_kernal_chain(self):
         """Includes the gate's BCS. A branch that lands mid-handler instead of
         on the chain would skip the kernal's SCNKEY and kill the keyboard."""
-        from py65.devices.mpu6502 import MPU
-        from py65.disassembler import Disassembler
-        from py65.memory import ObservableMemory
-
         for name, code in (
             ("hostdma", HOSTDMA_SWAP_IRQ_HANDLER),
             ("flicker", FLICKER_SWAP_IRQ_HANDLER),
@@ -284,25 +313,7 @@ class GateShapeTest(unittest.TestCase):
             ("flicker reporting", FLICKER_SWAP_REPORTING_IRQ_HANDLER),
         ):
             with self.subTest(handler=name):
-                mem = ObservableMemory()
-                for i, b in enumerate(code):
-                    mem[BANK_SWAP_IRQ_HANDLER_ADDR + i] = b
-                dis = Disassembler(MPU(memory=mem))
-                pc, end = BANK_SWAP_IRQ_HANDLER_ADDR, BANK_SWAP_IRQ_HANDLER_ADDR + len(code)
-                chain = end - 3
-                targets, last, cue_done = [], None, None
-                while pc < end:
-                    length, text = dis.instruction_at(pc)
-                    if text.split()[0] in ("BEQ", "BNE", "BCS", "BCC", "BMI", "BPL"):
-                        targets.append(int(text.split("$")[1], 16))
-                    last, pc = text, pc + length
-                    if text == f"STA ${PALETTE_CUE_ADDR:04x}":
-                        cue_done = pc
-                self.assertEqual(pc, end, "instruction stream overruns the handler")
-                self.assertEqual(last, "JMP $ea31")
-                # The one other branch skips the palette copy when no cue is set.
-                self.assertIn(cue_done, targets)
-                targets.remove(cue_done)
+                targets, chain = exit_branches(code)
                 self.assertIn(len(targets), (3, 4), f"expected every exit branch, got {targets}")
                 for t in targets:
                     self.assertEqual(t, chain, f"branch to ${t:04X} misses chain ${chain:04X}")

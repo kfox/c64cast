@@ -45,6 +45,14 @@ from c64cast.hw.c64 import (
 )
 from c64cast.hw.irq_unhook import confirm, unhook_raster_irq
 from c64cast.hw.kawari import COPY_STAGED_PALETTE_ASM
+from c64cast.hw.uci import (
+    CONTROL_NEXT_DATA,
+    HANDSHAKE_MASK,
+    PUSH_LOADED_COMMAND_ASM,
+    STATE_BUSY,
+    STATE_MASK,
+    UCI_CONTROL,
+)
 
 log = logging.getLogger(__name__)
 
@@ -233,11 +241,15 @@ BANK_SWAP_STATE_INIT = bytes([CIA2.PORT_A_BANK_0, 0x00, 0x00, BORDER_STALE])
 assert BANK_SWAP_STATE_ADDR + len(BANK_SWAP_STATE_INIT) == _SNAPSHOT
 BANK_SWAP_STATE_LEN = len(BANK_SWAP_STATE_INIT) + MHIRES_FRAME_TRACKER_LEN
 
-# A shot's palette, staged in a VIC-II Kawari, goes on screen with the shot's
-# first frame: the commit that flips to that frame starts the copy
-# (kawari.COPY_STAGED_PALETTE_ASM). The host cues it by writing a nonzero
-# byte here in the same DMA as that frame's tracker, starting a byte early
-# (`arm_frame`), so the C64 sees the cue and the frame together or neither.
+# A shot's palette goes on screen with the shot's first frame: the commit that
+# flips to that frame starts the change. The host cues it by writing the
+# machine's cue byte here in the same DMA as that frame's tracker, starting a
+# byte early (`arm_frame`), so the C64 sees the cue and the frame together or
+# neither. KAWARI_PALETTE_CUE starts the copy of a table staged in a VIC-II
+# Kawari (kawari.COPY_STAGED_PALETTE_ASM). ULTIMATE_PALETTE_CUE pushes the
+# command an Ultimate's command interface holds (uci.PUSH_LOADED_COMMAND_ASM):
+# the firmware changes the palette as soon as the push arrives, so a push from
+# the host lands fields before the frame it was sent behind.
 # Every other frame's write starts at the tracker and leaves the cue alone, so
 # a cued frame that a newer one replaces before it is shown hands the cue on.
 #
@@ -246,14 +258,70 @@ BANK_SWAP_STATE_LEN = len(BANK_SWAP_STATE_INIT) + MHIRES_FRAME_TRACKER_LEN
 # frame may be cued, so each snapshot moves the cue into its own byte below
 # and its commit fires that one.
 #
-# Both bytes are zero once the copy has started. Until then the Kawari's
+# Both cue bytes are zero once the change has started. Until then the Kawari's
 # registers have to hold the staging's setup, so the host waits for that
 # before it reads the palette back.
-PALETTE_CUE_STATE_ADDR = 0xC6FE
-PALETTE_CUE_STATE_LEN = 2
-_SNAPSHOT_CUE = PALETTE_CUE_STATE_ADDR
-PALETTE_CUE_ADDR = PALETTE_CUE_STATE_ADDR + 1
+#
+# An Ultimate's push leaves an answer the interface holds until it is
+# accepted, and the C64 accepts it too: a host that sent the accept on a timer
+# could send it ahead of a push the commit had not made yet. The push sets
+# _ANSWER_PENDING, and each IRQ after it checks the interface on its way out
+# to the kernal, past the commit's deadline, until the answer is in.
+PALETTE_CUE_STATE_ADDR = 0xC6FD
+PALETTE_CUE_STATE_LEN = 3
+_ANSWER_PENDING = PALETTE_CUE_STATE_ADDR
+_SNAPSHOT_CUE = PALETTE_CUE_STATE_ADDR + 1
+PALETTE_CUE_ADDR = PALETTE_CUE_STATE_ADDR + 2
 assert PALETTE_CUE_ADDR + 1 == FRAME_TRACKER_ADDR
+KAWARI_PALETTE_CUE = 0x01
+# Bit 7, so the commit tells the two apart with a BMI.
+ULTIMATE_PALETTE_CUE = 0x80
+
+
+def _cue_source(cue: int) -> str:
+    """Start the palette change the cue byte at `cue` names, and clear it.
+    Position-independent: the page flips insert it wherever their flip is."""
+    return f"""
+            LDA ${cue:04X}
+            BEQ cue_done
+            BMI cue_ultimate
+            {COPY_STAGED_PALETTE_ASM}
+            LDA #$00
+            STA ${cue:04X}
+            BEQ cue_done
+        cue_ultimate:
+            {PUSH_LOADED_COMMAND_ASM}
+            STA ${_ANSWER_PENDING:04X}
+            LDA #$00
+            STA ${cue:04X}
+        cue_done:
+    """
+
+
+# Every swap handler leaves through this on its way to the kernal. The answer
+# is accepted once the push's handshake bit has cleared and the interface has
+# left BUSY; an interface back at IDLE has nothing to accept.
+_ACCEPT_ANSWER_SOURCE = f"""
+            LDA ${_ANSWER_PENDING:04X}
+            BEQ to_kernal
+            LDA ${UCI_CONTROL:04X}
+            TAX
+            AND #${HANDSHAKE_MASK:02X}
+            BNE to_kernal
+            TXA
+            AND #${STATE_MASK:02X}
+            BEQ accepted
+            CMP #${STATE_BUSY:02X}
+            BEQ to_kernal
+            LDA #${CONTROL_NEXT_DATA:02X}
+            STA ${UCI_CONTROL:04X}
+        accepted:
+            LDA #$00
+            STA ${_ANSWER_PENDING:04X}
+        to_kernal:
+            JMP ${KERNAL.IRQ_HANDLER:04X}
+"""
+_ACCEPT_ANSWER = assemble(_ACCEPT_ANSWER_SOURCE, 0)
 
 # The audio pump's entry points the merged dispatchers route to.
 #
@@ -596,7 +664,9 @@ def _bank_swap_dispatcher(
         raster:
             STA $D019
             LDA ${_COPIED:04X}
-            BEQ copy
+            BNE gate
+            JMP copy
+        gate:
             LDA $D012
             CLC
             ADC #${_RASTER_GATE_BIAS:02X}
@@ -610,12 +680,7 @@ def _bank_swap_dispatcher(
             STA ${_DISPLAYED_BANK:04X}
             STA ${CIA2.PORT_A:04X}
             {border}
-            LDA ${_SNAPSHOT_CUE:04X}
-            BEQ cue_done
-            {COPY_STAGED_PALETTE_ASM}
-            LDA #$00
-            STA ${_SNAPSHOT_CUE:04X}
-        cue_done:
+            {_cue_source(_SNAPSHOT_CUE)}
             {commit_families}
             LDA #$00
             STA ${_COPIED:04X}
@@ -650,9 +715,11 @@ def _bank_swap_dispatcher(
             LDA #$01
             STA ${_COPIED:04X}
         chain:
-            JMP ${KERNAL.IRQ_HANDLER:04X}
+            {_ACCEPT_ANSWER_SOURCE}
     """
-    return assemble(source, BANK_SWAP_IRQ_HANDLER_ADDR)
+    code = assemble(source, BANK_SWAP_IRQ_HANDLER_ADDR)
+    assert BANK_SWAP_IRQ_HANDLER_ADDR + len(code) <= PALETTE_CUE_STATE_ADDR
+    return code
 
 
 # $DD00 bit 1 is set for bank 0 and clear for bank 2, which is what the copy
@@ -974,20 +1041,10 @@ _STA_COMMIT_REPORT = bytes([0x8D, COMMIT_REPORT_ADDR & 0xFF, COMMIT_REPORT_ADDR 
 _STA_DD00 = bytes([0x8D, CIA2.PORT_A & 0xFF, CIA2.PORT_A >> 8])
 
 
-# The page flips' palette cue (PALETTE_CUE_ADDR): position-independent, its
-# one branch relative. The cue is cleared after the copy starts, since the
-# host takes a clear cue to mean it may use the Kawari's registers again.
-_PAGE_FLIP_CUE = assemble(
-    f"""
-            LDA ${PALETTE_CUE_ADDR:04X}
-            BEQ cue_done
-            {COPY_STAGED_PALETTE_ASM}
-            LDA #$00
-            STA ${PALETTE_CUE_ADDR:04X}
-        cue_done:
-    """,
-    0,
-)
+# The page flips' palette cue. The cue is cleared after the change starts,
+# since the host takes a clear cue to mean it may use the Kawari's registers
+# again.
+_PAGE_FLIP_CUE = assemble(_cue_source(PALETTE_CUE_ADDR), 0)
 
 
 def _after_flip(
@@ -995,16 +1052,17 @@ def _after_flip(
 ) -> bytes:
     """`handler` with `inserted` right after its STA $DD00 at `flip_at`, and
     each exit branch whose operand sits at an `exit_branches` offset
-    retargeted past it onto the kernal chain. A still holds the committed
-    bank value where `inserted` begins."""
+    retargeted past it onto the kernal chain, which becomes _ACCEPT_ANSWER.
+    A still holds the committed bank value where `inserted` begins."""
     chain = len(handler) - 3
     out = bytearray(handler)
     for operand in exit_branches:
         assert operand + 1 + out[operand] == chain, f"branch at {operand - 1} misses the chain"
         out[operand] += len(inserted)
     assert handler[flip_at : flip_at + 3] == _STA_DD00, f"no STA $DD00 at {flip_at}"
+    assert handler[chain:] == _ACCEPT_ANSWER[-3:], "the handler does not end on the kernal chain"
     after_flip = flip_at + len(_STA_DD00)
-    return bytes(out[:after_flip]) + inserted + bytes(out[after_flip:])
+    return bytes(out[:after_flip]) + inserted + bytes(out[after_flip:chain]) + _ACCEPT_ANSWER
 
 
 def _hostdma_swap(inserted: bytes) -> bytes:
@@ -1204,11 +1262,11 @@ def _stage_bitmap_and_screen(
     return offset, regs
 
 
-def arm_frame(api: C64Backend, tracker: bytes, *, cue: bool) -> None:
-    """Write a staged frame's `tracker`, cueing the Kawari palette copy with
-    it when `cue` (PALETTE_CUE_ADDR)."""
+def arm_frame(api: C64Backend, tracker: bytes, *, cue: int) -> None:
+    """Write a staged frame's `tracker`, with the palette cue byte `cue`
+    (PALETTE_CUE_ADDR) when it is nonzero."""
     if cue:
-        api.write_memory_file(f"{PALETTE_CUE_ADDR:04X}", b"\x01" + tracker)
+        api.write_memory_file(f"{PALETTE_CUE_ADDR:04X}", bytes([cue]) + tracker)
     else:
         api.write_memory_file(f"{FRAME_TRACKER_ADDR:04X}", tracker)
 
@@ -1220,7 +1278,7 @@ def push_bitmap_via_reu(
     border: int,
     slot: int,
     *,
-    cue: bool = False,
+    cue: int = 0,
 ) -> None:
     """REUWRITE bitmap + screen into REU staging slot ``slot``, then DMAWRITE
     the 16-byte frame tracker to $C700-$C70F. The C64-side raster IRQ copies
@@ -1230,7 +1288,7 @@ def push_bitmap_via_reu(
     ``slot`` is the caller's rotation through REU_VIDEO_SLOTS (see the REU
     staging layout). The destinations are bank 0's; the IRQ re-aims them.
     ``border`` is the frame's $D020 value, which the IRQ writes as it flips.
-    ``cue`` starts the Kawari palette copy with this frame (`arm_frame`).
+    ``cue`` is the palette cue byte that rides this frame (`arm_frame`).
 
     Per-frame host work: 2 REUWRITEs (bus-clean) + 1 DMAWRITE (16 bytes,
     halts C64 bus for ~16 cycles — negligible vs the ~9000 cycles the
@@ -1251,7 +1309,7 @@ def push_mhires_via_reu(
     bg0: int,
     slot: int,
     *,
-    cue: bool = False,
+    cue: int = 0,
 ) -> None:
     """MultiHires bank-swap push. Extends push_bitmap_via_reu with a third
     REUWRITE for the 1000-byte color RAM, plus a bg0 byte in the tracker

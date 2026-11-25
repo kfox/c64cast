@@ -19,6 +19,7 @@ import numpy as np
 
 from c64cast.app.config import ColorCfg, Config, scene_and_clip_cfgs, scene_color
 from c64cast.hw import kawari, uci
+from c64cast.video.modes_irq import KAWARI_PALETTE_CUE, ULTIMATE_PALETTE_CUE
 
 if TYPE_CHECKING:
     from c64cast.video.palette_shots import PaletteShot
@@ -37,6 +38,14 @@ _PUSH_ATTEMPTS = 2
 # held out of its raster window by a long host write a field more.
 COPY_WAIT_S = 0.5
 COPY_POLL_S = 0.01
+# Longer than a REU dispatcher takes from a frame's arm to its commit, so a
+# Kawari's `ack` rarely has to wait for the cue to clear.
+ARM_TO_COMMIT_S = 0.1
+# An Ultimate's cued push is accepted by the C64 an IRQ or two after the
+# commit, and nothing on the host can see it happen: reads during playback
+# wedge the machine. So the next table loads only once both have surely run,
+# since a load into an interface still holding the answer would be lost.
+CUED_ANSWER_WAIT_S = ARM_TO_COMMIT_S + 0.1
 
 
 class PaletteWriter(Protocol):
@@ -44,10 +53,11 @@ class PaletteWriter(Protocol):
 
     `push` is the checked transaction: True only when the machine took the
     table. `load`, `go`, `ack` and `abort` are the split push `ShotPusher`
-    drives at shot cuts; `go` must not flush, so a caller that sends it behind
-    a frame's writes has the colors change on that frame. Where `cues_frames`,
-    the frame itself starts the change instead, and `go` sends nothing. Any of
-    the four may raise on a link failure."""
+    drives at shot cuts. Each step but `load` is told whether the change is
+    `cued`: started by the commit that shows a frame, from `frame_cue`, rather
+    than by `go`. An uncued `go` must not flush, so a caller that sends it
+    behind a frame's writes has the colors change as near that frame as the
+    link allows. Any of the four may raise on a link failure."""
 
     #: Names the machine in log lines, as in "the Ultimate's own palette".
     device: str
@@ -55,14 +65,15 @@ class PaletteWriter(Protocol):
     channel_bits: int
     #: How long `load` takes, which sets the shortest stretch worth a table.
     load_time_s: float
-    #: How long after `go` the machine is ready for `ack`.
-    ack_delay_s: float
     #: Whether `load`, `go`, `ack` and `abort` work, so a video's palette can
     #: follow its shots.
     follows_shots: bool
-    #: Whether a loaded table goes on screen with a frame the display mode
-    #: cues (`cue_palette_copy`), rather than when `go` is sent.
-    cues_frames: bool
+    #: The palette cue byte (modes_irq.PALETTE_CUE_ADDR) that has a double
+    #: buffer's commit start this machine's change.
+    frame_cue: int
+    #: Whether an uncued `go` changes the palette, so a display mode that
+    #: cannot cue frames can still follow shots.
+    goes_from_host: bool
     #: Why `read_machine` returned None, for the warning.
     unreadable: str
 
@@ -81,11 +92,22 @@ class PaletteWriter(Protocol):
 
     def load(self, table_bgr: np.ndarray, stop: Callable[[], bool]) -> bool: ...
 
-    def go(self) -> None: ...
+    def ack_delay_s(self, cued: bool) -> float:
+        """How long after `go` the machine is ready for `ack`."""
+        ...
 
-    def ack(self) -> None: ...
+    def go(self, cued: bool) -> None: ...
 
-    def abort(self) -> None: ...
+    def ack(self, cued: bool) -> None: ...
+
+    def abort(self, cued: bool) -> None: ...
+
+
+def _withdraw_cue(bus: uci.MemoryBus) -> None:
+    """Clear a palette cue the C64 has not acted on, and its pending answer."""
+    from c64cast.video.modes_irq import PALETTE_CUE_STATE_ADDR, PALETTE_CUE_STATE_LEN
+
+    bus.write_memory(f"{PALETTE_CUE_STATE_ADDR:04X}", bytes(PALETTE_CUE_STATE_LEN).hex())
 
 
 def _to_rgb(table_bgr: np.ndarray) -> list[tuple[int, int, int]]:
@@ -103,9 +125,9 @@ class UltimatePaletteWriter:
     device = "the Ultimate"
     channel_bits = 8
     load_time_s = 1.2
-    ack_delay_s = uci.ACK_DELAY_S
     follows_shots = True
-    cues_frames = False
+    frame_cue = ULTIMATE_PALETTE_CUE
+    goes_from_host = True
     unreadable = (
         "this Ultimate did not answer the UCI palette read (firmware before "
         "3.15a, a C64 Ultimate on 1.1.0, or the Command Interface turned off)"
@@ -136,13 +158,21 @@ class UltimatePaletteWriter:
     def load(self, table_bgr: np.ndarray, stop: Callable[[], bool]) -> bool:
         return uci.load_palette(self._api, _to_rgb(table_bgr), stop=stop)
 
-    def go(self) -> None:
-        uci.go(self._api)
+    def ack_delay_s(self, cued: bool) -> float:
+        return CUED_ANSWER_WAIT_S if cued else uci.ACK_DELAY_S
 
-    def ack(self) -> None:
-        uci.ack(self._api)
+    def go(self, cued: bool) -> None:
+        if not cued:
+            uci.go(self._api)
 
-    def abort(self) -> None:
+    def ack(self, cued: bool) -> None:
+        # A cued push is answered on the C64 (modes_irq._ANSWER_PENDING).
+        if not cued:
+            uci.ack(self._api)
+
+    def abort(self, cued: bool) -> None:
+        if cued:
+            _withdraw_cue(self._api)
         uci.abort(self._api)
 
 
@@ -167,10 +197,8 @@ class KawariPaletteWriter:
     device = "the Kawari"
     channel_bits = 6
     load_time_s = 0.05
-    # Longer than a REU dispatcher takes from a frame's arm to its commit, so
-    # `ack` rarely has to wait for the cue to clear.
-    ack_delay_s = 0.1
-    cues_frames = True
+    frame_cue = KAWARI_PALETTE_CUE
+    goes_from_host = False
     unreadable = "the Kawari did not take back the palette a run that ended early found"
 
     def __init__(
@@ -217,14 +245,17 @@ class KawariPaletteWriter:
         self._staged = table
         return self._chip.stage_palette(_kawari_channels(table), stop)
 
-    def go(self) -> None:
+    def ack_delay_s(self, cued: bool) -> float:
+        return ARM_TO_COMMIT_S
+
+    def go(self, cued: bool) -> None:
         pass
 
-    def ack(self) -> None:
+    def ack(self, cued: bool) -> None:
         if self._staged is None:
             raise RuntimeError("nothing was loaded to acknowledge")
         if not self._copy_started():
-            self.abort()
+            self.abort(cued)
             raise RuntimeError(
                 f"the C64 did not start the shot's palette copy within {COPY_WAIT_S:.1f} s"
             )
@@ -234,17 +265,13 @@ class KawariPaletteWriter:
         self._may_show = [staged]
         self._note(staged)
 
-    def abort(self) -> None:
+    def abort(self, cued: bool) -> None:
         # An abort after `go` leaves the staged table possibly showing.
         staged, self._staged = self._staged, None
         if staged is not None:
             self._may_show.append(staged)
         if self._reads is not None:
-            from c64cast.video.modes_irq import PALETTE_CUE_STATE_ADDR, PALETTE_CUE_STATE_LEN
-
-            self._reads.write_memory(
-                f"{PALETTE_CUE_STATE_ADDR:04X}", bytes(PALETTE_CUE_STATE_LEN).hex()
-            )
+            _withdraw_cue(self._reads)
         self._chip.drop_palette()
 
     def _copy_started(self) -> bool:
@@ -387,17 +414,20 @@ class HardwarePalette:
     def load_time_s(self) -> float:
         return self._writer.load_time_s
 
-    @property
-    def ack_delay_s(self) -> float:
-        return self._writer.ack_delay_s
+    def ack_delay_s(self, cued: bool) -> float:
+        return self._writer.ack_delay_s(cued)
 
     @property
     def follows_shots(self) -> bool:
         return self._writer.follows_shots
 
     @property
-    def cues_frames(self) -> bool:
-        return self._writer.cues_frames
+    def frame_cue(self) -> int:
+        return self._writer.frame_cue
+
+    @property
+    def goes_from_host(self) -> bool:
+        return self._writer.goes_from_host
 
     def show(self, table_bgr: np.ndarray, scene: str) -> bool:
         """Push `table_bgr` and point the quantizer at it. False when the
@@ -498,17 +528,17 @@ class HardwarePalette:
                 self._set_host(table, _table_name(table))
             return True
 
-    def go(self) -> None:
+    def go(self, cued: bool) -> None:
         with self._lock:
-            self._blind("pushing a shot's palette", self._writer.go)
+            self._blind("pushing a shot's palette", self._writer.go, cued)
 
-    def ack(self) -> None:
+    def ack(self, cued: bool) -> None:
         with self._lock:
-            self._blind("acknowledging a shot's palette", self._writer.ack)
+            self._blind("acknowledging a shot's palette", self._writer.ack, cued)
 
-    def abort(self) -> None:
+    def abort(self, cued: bool) -> None:
         with self._lock:
-            self._blind("dropping a shot's palette", self._writer.abort)
+            self._blind("dropping a shot's palette", self._writer.abort, cued)
 
     def _blind(self, what: str, op: Callable[..., object], *args: object) -> bool:
         try:
@@ -566,8 +596,8 @@ class ShotPusher:
     first frames. The render thread calls `before_render` with the stretch
     whose first frame is about to render, and `after_render` once that frame
     is written: a loaded table is adopted by the quantizer before the render
-    and pushed after it, so both change on the same frame; where the writer
-    `cues_frames`, `cue` is called instead, to have the frame itself start
+    and pushed after it, so both change on the same frame. Given a `cue`, the
+    pusher calls it instead, to have the commit that shows the frame start
     the change. A table not yet
     loaded when its frame comes is pushed on the first frame after it is. The
     worker acknowledges a push the writer's `ack_delay_s` after it went, and
@@ -577,6 +607,7 @@ class ShotPusher:
     def __init__(self, control: HardwarePalette, cue: Callable[[], None] | None = None) -> None:
         self._control = control
         self._cue = cue
+        self._cued = cue is not None
         self._cond = threading.Condition()
         self._to_fit: deque[PaletteShot] = deque()
         self._to_load: deque[PaletteShot] = deque()
@@ -604,7 +635,7 @@ class ShotPusher:
             outstanding = self._loaded is not None or self._went is not None
             self._loaded = self._went = None
         if outstanding:
-            self._control.abort()
+            self._control.abort(self._cued)
 
     def ready(self, shot: PaletteShot) -> None:
         with self._cond:
@@ -653,7 +684,7 @@ class ShotPusher:
         with self._cond:
             if self._committing is None:
                 return
-        self._control.go()
+        self._control.go(self._cued)
         with self._cond:
             self._committing = None
             self._went = time.monotonic()
@@ -672,7 +703,7 @@ class ShotPusher:
     def _wait_s(self) -> float | None:
         if self._went is None:
             return None
-        return max(0.0, self._went + self._control.ack_delay_s - time.monotonic())
+        return max(0.0, self._went + self._control.ack_delay_s(self._cued) - time.monotonic())
 
     def _superseded(self, shot: PaletteShot) -> bool:
         due = self._due
@@ -708,12 +739,12 @@ class ShotPusher:
             self._to_load.append(shot)
 
     def _ack(self) -> None:
-        self._control.ack()
+        self._control.ack(self._cued)
         with self._cond:
             self._went = None
 
     def _drop_loaded(self) -> None:
-        self._control.abort()
+        self._control.abort(self._cued)
         with self._cond:
             self._loaded = None
 
@@ -732,7 +763,7 @@ class ShotPusher:
                 self._loaded = shot
                 self._cond.notify_all()
         else:
-            self._control.abort()
+            self._control.abort(self._cued)
 
 
 def settle_for(api: object, scene: object) -> None:

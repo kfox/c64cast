@@ -21,6 +21,7 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).parent))
 from _fakes import FakeAPI, quiet_logging  # noqa: E402
+from _handler_shape import exit_branches  # noqa: E402
 
 from c64cast.app.scene_factory import resolve_flicker_tolerance  # noqa: E402
 from c64cast.hw.c64 import (  # noqa: E402
@@ -52,7 +53,6 @@ from c64cast.video.modes_irq import (  # noqa: E402
     FLICKER_TRACKER_OFF_PHASE,
     FLICKER_TRACKER_OFF_READY,
     FRAME_TRACKER_ADDR,
-    PALETTE_CUE_ADDR,
 )
 
 
@@ -480,31 +480,7 @@ class FlickerHandlerTest(unittest.TestCase):
         self.assertEqual(before, after)
 
     def test_every_branch_targets_the_kernal_chain(self):
-        from py65.devices.mpu6502 import MPU
-        from py65.disassembler import Disassembler
-        from py65.memory import ObservableMemory
-
-        mem = ObservableMemory()
-        for i, b in enumerate(FLICKER_SWAP_IRQ_HANDLER):
-            mem[BANK_SWAP_IRQ_HANDLER_ADDR + i] = b
-        dis = Disassembler(MPU(memory=mem))
-        pc = BANK_SWAP_IRQ_HANDLER_ADDR
-        end = pc + len(FLICKER_SWAP_IRQ_HANDLER)
-        chain = end - 3  # the JMP $EA31
-        targets, last, cue_done = [], None, None
-        while pc < end:
-            length, text = dis.instruction_at(pc)
-            if text.split()[0] in ("BEQ", "BNE", "BCS"):
-                targets.append(int(text.split("$")[1], 16))
-            last = text
-            pc += length
-            if text == f"STA ${PALETTE_CUE_ADDR:04x}":
-                cue_done = pc
-        self.assertEqual(pc, end, "instruction stream does not land on the handler's end")
-        self.assertEqual(last, "JMP $ea31")
-        # The one other branch skips the palette copy when no cue is set.
-        self.assertIn(cue_done, targets)
-        targets.remove(cue_done)
+        targets, chain = exit_branches(FLICKER_SWAP_IRQ_HANDLER)
         self.assertTrue(targets, "no branches found — the offsets test is vacuous")
         for t in targets:
             self.assertEqual(t, chain, f"branch to ${t:04X} misses the chain at ${chain:04X}")
