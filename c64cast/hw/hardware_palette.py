@@ -32,6 +32,11 @@ log = logging.getLogger(__name__)
 # the commands that connection may have discarded, so a push that went out
 # on it fails once.
 _PUSH_ATTEMPTS = 2
+# How long `KawariPaletteWriter.ack` waits for the swap IRQ to start a cued
+# copy. A REU dispatcher's commit can come a few fields after the arm, and one
+# held out of its raster window by a long host write a field more.
+COPY_WAIT_S = 0.5
+COPY_POLL_S = 0.01
 
 
 class PaletteWriter(Protocol):
@@ -40,8 +45,9 @@ class PaletteWriter(Protocol):
     `push` is the checked transaction: True only when the machine took the
     table. `load`, `go`, `ack` and `abort` are the split push `ShotPusher`
     drives at shot cuts; `go` must not flush, so a caller that sends it behind
-    a frame's writes has the colors change on that frame. Any of the four may
-    raise on a link failure."""
+    a frame's writes has the colors change on that frame. Where `cues_frames`,
+    the frame itself starts the change instead, and `go` sends nothing. Any of
+    the four may raise on a link failure."""
 
     #: Names the machine in log lines, as in "the Ultimate's own palette".
     device: str
@@ -54,6 +60,9 @@ class PaletteWriter(Protocol):
     #: Whether `load`, `go`, `ack` and `abort` work, so a video's palette can
     #: follow its shots.
     follows_shots: bool
+    #: Whether a loaded table goes on screen with a frame the display mode
+    #: cues (`cue_palette_copy`), rather than when `go` is sent.
+    cues_frames: bool
     #: Why `read_machine` returned None, for the warning.
     unreadable: str
 
@@ -96,6 +105,7 @@ class UltimatePaletteWriter:
     load_time_s = 1.2
     ack_delay_s = uci.ACK_DELAY_S
     follows_shots = True
+    cues_frames = False
     unreadable = (
         "this Ultimate did not answer the UCI palette read (firmware before "
         "3.15a, a C64 Ultimate on 1.1.0, or the Command Interface turned off)"
@@ -142,8 +152,11 @@ class KawariPaletteWriter:
     failed write rather than raising.
 
     A shot's table is staged in video memory by `load` and copied into the
-    palette by `go` in the raster window where the double buffer flips, so
-    the colors change with the picture.
+    palette by the double buffer's swap IRQ, in the commit that shows the
+    shot's first frame (`modes_irq.PALETTE_CUE_ADDR`). `ack` waits for that
+    commit before it reads the palette back, over `playback_reads`: the link
+    the C64's RAM is read over while the video plays, or None where reads
+    must stay out of a stream, which leaves a video one palette.
 
     Its palette survives a C64 reset, so there are no resets to watch, and it
     survives a run that dies too. Each push therefore records what the
@@ -154,13 +167,19 @@ class KawariPaletteWriter:
     device = "the Kawari"
     channel_bits = 6
     load_time_s = 0.05
-    ack_delay_s = 0.0
+    # Longer than a REU dispatcher takes from a frame's arm to its commit, so
+    # `ack` rarely has to wait for the cue to clear.
+    ack_delay_s = 0.1
+    cues_frames = True
     unreadable = "the Kawari did not take back the palette a run that ended early found"
 
-    def __init__(self, chip: kawari.Kawari, record: Path, *, reads_track_the_beam: bool) -> None:
+    def __init__(
+        self, chip: kawari.Kawari, record: Path, *, playback_reads: uci.MemoryBus | None
+    ) -> None:
         self.follows_shots = (
-            reads_track_the_beam and chip.info.version >= kawari.OVERLAY_COPY_FIRMWARE
+            playback_reads is not None and chip.info.version >= kawari.OVERLAY_COPY_FIRMWARE
         )
+        self._reads = playback_reads
         self._chip = chip
         self._record = record
         self._machine = _kawari_bgr(chip)
@@ -199,12 +218,17 @@ class KawariPaletteWriter:
         return self._chip.stage_palette(_kawari_channels(table), stop)
 
     def go(self) -> None:
-        self._chip.fire_palette()
+        pass
 
     def ack(self) -> None:
-        staged, self._staged = self._staged, None
-        if staged is None:
+        if self._staged is None:
             raise RuntimeError("nothing was loaded to acknowledge")
+        if not self._copy_started():
+            self.abort()
+            raise RuntimeError(
+                f"the C64 did not start the shot's palette copy within {COPY_WAIT_S:.1f} s"
+            )
+        staged, self._staged = self._staged, None
         if not self._chip.check_palette(_kawari_channels(staged)):
             raise RuntimeError("the Kawari's palette did not read back as the shot's table")
         self._may_show = [staged]
@@ -215,7 +239,27 @@ class KawariPaletteWriter:
         staged, self._staged = self._staged, None
         if staged is not None:
             self._may_show.append(staged)
+        if self._reads is not None:
+            from c64cast.video.modes_irq import PALETTE_CUE_STATE_ADDR, PALETTE_CUE_STATE_LEN
+
+            self._reads.write_memory(
+                f"{PALETTE_CUE_STATE_ADDR:04X}", bytes(PALETTE_CUE_STATE_LEN).hex()
+            )
         self._chip.drop_palette()
+
+    def _copy_started(self) -> bool:
+        from c64cast.video.modes_irq import PALETTE_CUE_STATE_ADDR, PALETTE_CUE_STATE_LEN
+
+        assert self._reads is not None
+        self._reads.flush()
+        deadline = time.monotonic() + COPY_WAIT_S
+        while True:
+            cue = self._reads.read_memory(PALETTE_CUE_STATE_ADDR, PALETTE_CUE_STATE_LEN)
+            if cue is not None and not any(cue):
+                return True
+            if time.monotonic() >= deadline:
+                return False
+            time.sleep(COPY_POLL_S)
 
     def _note(self, *shows: np.ndarray) -> None:
         from c64cast.control.transport import atomic_write_text
@@ -350,6 +394,10 @@ class HardwarePalette:
     @property
     def follows_shots(self) -> bool:
         return self._writer.follows_shots
+
+    @property
+    def cues_frames(self) -> bool:
+        return self._writer.cues_frames
 
     def show(self, table_bgr: np.ndarray, scene: str) -> bool:
         """Push `table_bgr` and point the quantizer at it. False when the
@@ -518,14 +566,17 @@ class ShotPusher:
     first frames. The render thread calls `before_render` with the stretch
     whose first frame is about to render, and `after_render` once that frame
     is written: a loaded table is adopted by the quantizer before the render
-    and pushed after it, so both change on the same frame. A table not yet
+    and pushed after it, so both change on the same frame; where the writer
+    `cues_frames`, `cue` is called instead, to have the frame itself start
+    the change. A table not yet
     loaded when its frame comes is pushed on the first frame after it is. The
     worker acknowledges a push the writer's `ack_delay_s` after it went, and
     only then loads the next table, since the Ultimate's interface holds one
     command."""
 
-    def __init__(self, control: HardwarePalette) -> None:
+    def __init__(self, control: HardwarePalette, cue: Callable[[], None] | None = None) -> None:
         self._control = control
+        self._cue = cue
         self._cond = threading.Condition()
         self._to_fit: deque[PaletteShot] = deque()
         self._to_load: deque[PaletteShot] = deque()
@@ -594,6 +645,8 @@ class ShotPusher:
             with self._cond:
                 self._committing = None
             return False
+        if self._cue is not None:
+            self._cue()
         return True
 
     def after_render(self) -> None:
@@ -792,11 +845,15 @@ def _writer_for(api: object) -> PaletteWriter | None:
         return UltimatePaletteWriter(api)
     chip = getattr(api, "kawari", None)
     if isinstance(chip, kawari.Kawari) and chip.info.configurable_rgb:
-        # `go` times its copy off a raster read. A TeensyROM+ read lands within
-        # a few lines; an Ultimate's REST read takes about two frames, so it
-        # is stale by the time the copy fires, and a third of the copies tore (measured).
+        # `ack` reads the C64 while the video plays. An Ultimate's reads are
+        # REST requests, and polling REST through a stream has wedged
+        # Ultimates.
         tr_link = getattr(getattr(api, "profile", None), "family", None) == "tr"
-        return KawariPaletteWriter(chip, kawari_palette_record_path(), reads_track_the_beam=tr_link)
+        return KawariPaletteWriter(
+            chip,
+            kawari_palette_record_path(),
+            playback_reads=cast("uci.MemoryBus", api) if tr_link else None,
+        )
     return None
 
 

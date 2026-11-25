@@ -12,7 +12,9 @@ window wraps through 0, which is exactly where an off-by-one would hide.
 from __future__ import annotations
 
 import unittest
+from collections.abc import Callable
 
+from c64cast.hw import kawari
 from c64cast.hw.c64 import (
     D018_HIRES_PAGE_A,
     D018_HIRES_PAGE_B,
@@ -32,17 +34,27 @@ from c64cast.video.modes_irq import (
     HOSTDMA_SWAP_IRQ_HANDLER,
     HOSTDMA_SWAP_REPORTING_IRQ_HANDLER,
     HOSTDMA_TRACKER_OFF_READY,
+    PAGE_FLIP_COMMIT_LAST_SAFE_LINE,
+    PALETTE_CUE_ADDR,
 )
 
 BG0 = 0x05
 
 # Lines on which a commit is invisible. The set wraps through 0, and both edges
 # are included because the handler's rotate-then-compare has to get both right.
-IN_WINDOW = (RASTER_VBLANK_LINE, 0xFD, 0xFF, 0, 1, RASTER_COMMIT_LAST_SAFE_LINE)
+IN_WINDOW = (RASTER_VBLANK_LINE, 0xFD, 0xFF, 0, 1, PAGE_FLIP_COMMIT_LAST_SAFE_LINE)
 # Lines inside the picture, where a commit tears. The first is one past the
 # window's far edge; the last is one short of the IRQ line, and 248-250 are
 # the bottom cell row's last pixel lines, past its badline but still drawn.
-OUT_OF_WINDOW = (RASTER_COMMIT_LAST_SAFE_LINE + 1, 51, 128, 200, 248, 249, RASTER_VBLANK_LINE - 1)
+OUT_OF_WINDOW = (
+    PAGE_FLIP_COMMIT_LAST_SAFE_LINE + 1,
+    51,
+    128,
+    200,
+    248,
+    249,
+    RASTER_VBLANK_LINE - 1,
+)
 
 
 class _HandlerHarness:
@@ -51,6 +63,8 @@ class _HandlerHarness:
     CODE: bytes
     READY_OFF: int
     TRACKER: list[int]
+    # From the unittest.TestCase each concrete harness also inherits.
+    assertEqual: Callable[..., None]
 
     def _memory(self):
         from py65.memory import ObservableMemory
@@ -88,6 +102,46 @@ class _HandlerHarness:
 
     def _still_staged(self, mem):
         return mem[FRAME_TRACKER_ADDR + self.READY_OFF] == 1
+
+    def _watch_kawari(self, mem) -> list[tuple[int, int]]:
+        """Every $DD00 write and Kawari port A write, in order."""
+        writes: list[tuple[int, int]] = []
+        watched = [0xDD00, *range(kawari.VIDEO_MEM_1_ADDR, kawari.VIDEO_MEM_1_VAL + 1)]
+        mem.subscribe_to_write(watched, lambda a, v: writes.append((a, v)))
+        return writes
+
+    def test_a_cued_frame_starts_the_palette_copy_after_its_flip(self):
+        mem = self._memory()
+        self._stage(mem)
+        mem[PALETTE_CUE_ADDR] = 1
+        writes = self._watch_kawari(mem)
+        self._run_field(mem, RASTER_VBLANK_LINE)
+        self.assertEqual(
+            writes,
+            [
+                (0xDD00, DD00_BANK_2),
+                (kawari.VIDEO_MEM_1_ADDR, kawari.OVERLAY_PALETTE_RGB),
+                (kawari.VIDEO_MEM_1_ADDR + 1, 0x00),
+                (kawari.VIDEO_MEM_1_VAL, kawari.DMA_COPY_VMEM),
+            ],
+        )
+        self.assertEqual(mem[PALETTE_CUE_ADDR], 0)
+
+    def test_a_deferred_cued_frame_keeps_its_cue(self):
+        mem = self._memory()
+        self._stage(mem)
+        mem[PALETTE_CUE_ADDR] = 1
+        writes = self._watch_kawari(mem)
+        self._run_field(mem, 128)
+        self.assertEqual(writes, [])
+        self.assertEqual(mem[PALETTE_CUE_ADDR], 1)
+
+    def test_an_uncued_frame_starts_no_copy(self):
+        mem = self._memory()
+        self._stage(mem)
+        writes = self._watch_kawari(mem)
+        self._run_field(mem, RASTER_VBLANK_LINE)
+        self.assertEqual(writes, [(0xDD00, DD00_BANK_2)])
 
 
 class HostdmaGateTest(_HandlerHarness, unittest.TestCase):
@@ -236,14 +290,19 @@ class GateShapeTest(unittest.TestCase):
                 dis = Disassembler(MPU(memory=mem))
                 pc, end = BANK_SWAP_IRQ_HANDLER_ADDR, BANK_SWAP_IRQ_HANDLER_ADDR + len(code)
                 chain = end - 3
-                targets, last = [], None
+                targets, last, cue_done = [], None, None
                 while pc < end:
                     length, text = dis.instruction_at(pc)
                     if text.split()[0] in ("BEQ", "BNE", "BCS", "BCC", "BMI", "BPL"):
                         targets.append(int(text.split("$")[1], 16))
                     last, pc = text, pc + length
+                    if text == f"STA ${PALETTE_CUE_ADDR:04x}":
+                        cue_done = pc
                 self.assertEqual(pc, end, "instruction stream overruns the handler")
                 self.assertEqual(last, "JMP $ea31")
+                # The one other branch skips the palette copy when no cue is set.
+                self.assertIn(cue_done, targets)
+                targets.remove(cue_done)
                 self.assertIn(len(targets), (3, 4), f"expected every exit branch, got {targets}")
                 for t in targets:
                     self.assertEqual(t, chain, f"branch to ${t:04X} misses chain ${chain:04X}")

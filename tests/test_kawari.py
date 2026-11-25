@@ -31,9 +31,9 @@ class FakeKawari:
     offset `drop_offset` is lost, as a TeensyROM+ write the link absorbed is.
 
     Video memory, port A's auto-increment and the VMEM copy (into the overlay
-    too) follow the Kawari's register doc. The raster beam advances
-    `lines_per_read` lines on every read of $D011, and each copy notes the
-    line it was fired on in `copies_at`."""
+    too) follow the Kawari's register doc; `copies` counts the copies. Any
+    other address is plain C64 RAM, and `commit` runs a page-flip handler's
+    palette cue against it, as the swap IRQ does when it shows a frame."""
 
     def __init__(
         self,
@@ -47,9 +47,6 @@ class FakeKawari:
         cap_lo: int = 0b11001110,
         drop_offset: int | None = None,
         version: tuple[int, int] = (1, 17),
-        raster_line: int = 100,
-        lines_per_read: int = 6,
-        raster_answers: bool = True,
         lose_trigger: bool = False,
     ):
         self.stock = stock
@@ -78,11 +75,9 @@ class FakeKawari:
         self.vram = bytearray(0x10000)
         self.port_b_addr = 0
         self.dma_count = 0
-        self.raster_line = raster_line
-        self.lines_per_read = lines_per_read
-        self.copies_at: list[int] = []
-        self.raster_answers = raster_answers
+        self.copies = 0
         self.lose_trigger = lose_trigger
+        self.ram = bytearray(0x10000)
 
     def write_memory(self, address: str, data_hex: str) -> None:
         if self.stock:
@@ -91,6 +86,9 @@ class FakeKawari:
             self._write(int(address, 16) + i, value)
 
     def _write(self, addr: int, value: int) -> None:
+        if not _KAWARI_REGISTERS[0] <= addr <= _KAWARI_REGISTERS[1]:
+            self.ram[addr] = value
+            return
         self.written.add(addr)
         if addr == kawari.VIDEO_MEM_FLAGS:
             self.flag_writes.append(value)
@@ -141,7 +139,7 @@ class FakeKawari:
             self.hires_mode = value
 
     def _copy(self) -> None:
-        self.copies_at.append(self.raster_line)
+        self.copies += 1
         for i in range(self.dma_count):
             value = self.vram[(self.port_b_addr + i) & 0xFFFF]
             if self.flags & kawari.FLAGS_OVERLAY:
@@ -151,11 +149,8 @@ class FakeKawari:
         self.dma_count = 0
 
     def read_memory(self, address: int, length: int, timeout: float = 1.0) -> bytes | None:
-        if address == 0xD011 and length == 2:
-            if not self.raster_answers:
-                return None
-            self.raster_line = (self.raster_line + self.lines_per_read) % 263
-            return bytes([(self.raster_line >> 1) & 0x80, self.raster_line & 0xFF])
+        if not _KAWARI_REGISTERS[0] <= address <= _KAWARI_REGISTERS[1]:
+            return bytes(self.ram[address : address + length])
         if self.stock or not self.active:
             return b"\xff" * length
         if address == kawari.VIDEO_MEM_FLAGS:
@@ -175,6 +170,36 @@ class FakeKawari:
 
     def palette_6bit(self) -> list[int]:
         return [self.overlay[o] & kawari.CHANNEL_MAX for o in kawari._PALETTE_OFFSETS]
+
+    def commit(self) -> None:
+        """Run the page flips' palette cue (modes_irq._PAGE_FLIP_CUE) on a
+        6502 whose memory is this C64."""
+        from py65.devices.mpu6502 import MPU
+        from py65.memory import ObservableMemory
+
+        from c64cast.video import modes_irq
+
+        mem = ObservableMemory()
+        cue = modes_irq.PALETTE_CUE_ADDR
+        mem[cue] = self.ram[cue]
+        mem.subscribe_to_write(range(0xD000, 0xD100), lambda a, v: self._write(a, v))
+        mem.subscribe_to_write([cue], lambda a, v: self.ram.__setitem__(a, v))
+        code = modes_irq._PAGE_FLIP_CUE
+        for i, b in enumerate(code):
+            mem[0x1000 + i] = b
+        mpu = MPU(memory=mem)
+        mpu.pc = 0x1000
+        while mpu.pc != 0x1000 + len(code):
+            mpu.step()
+
+    def cue(self) -> None:
+        """What a cued frame's tracker write leaves in RAM."""
+        from c64cast.video import modes_irq
+
+        self.ram[modes_irq.PALETTE_CUE_ADDR] = 1
+
+
+_KAWARI_REGISTERS = (0xD02F, 0xD03F)
 
 
 class ProbeTest(unittest.TestCase):
@@ -355,7 +380,7 @@ class KawariWriterTest(unittest.TestCase):
         self.scene[8] = (kawari.to_8bit(10), kawari.to_8bit(30), kawari.to_8bit(60))
 
     def _writer(self) -> hp.KawariPaletteWriter:
-        return hp.KawariPaletteWriter(self.chip, self.record, reads_track_the_beam=True)
+        return hp.KawariPaletteWriter(self.chip, self.record, playback_reads=self.bus)
 
     def test_the_machine_palette_is_the_one_found_at_startup(self):
         machine = self._writer().read_machine()
@@ -395,7 +420,7 @@ class KawariWriterTest(unittest.TestCase):
         found = kawari.probe(self.bus)
         assert found is not None
         self.assertIsNone(
-            hp.KawariPaletteWriter(found, self.record, reads_track_the_beam=True).read_machine()
+            hp.KawariPaletteWriter(found, self.record, playback_reads=self.bus).read_machine()
         )
         self.assertTrue(self.record.exists())
 
@@ -414,7 +439,8 @@ class KawariWriterTest(unittest.TestCase):
 
 
 class ShotPushTest(unittest.TestCase):
-    """A shot's table: staged by `load`, copied in by `go`, checked by `ack`."""
+    """A shot's table: staged by `load`, copied in by the commit that shows
+    the cued frame, checked by `ack`."""
 
     def setUp(self):
         self.bus = FakeKawari()
@@ -426,52 +452,76 @@ class ShotPushTest(unittest.TestCase):
         self.shot = self.machine.copy()
         self.shot[5] = (kawari.to_8bit(1), kawari.to_8bit(2), kawari.to_8bit(3))
         self.shot[9] = (kawari.to_8bit(40), kawari.to_8bit(50), kawari.to_8bit(60))
-        self.writer = hp.KawariPaletteWriter(self.chip, self.record, reads_track_the_beam=True)
+        self.writer = hp.KawariPaletteWriter(self.chip, self.record, playback_reads=self.bus)
 
     def _record_shows(self) -> list[np.ndarray]:
         return [np.asarray(t) for t in json.loads(self.record.read_text())["shows"]]
 
+    def _show_shot(self) -> None:
+        self.writer.load(self.shot, lambda: False)
+        self.bus.cue()
+        self.writer.go()
+        self.bus.commit()
+
+    def _cue_state(self) -> bytes:
+        from c64cast.video import modes_irq
+
+        start = modes_irq.PALETTE_CUE_STATE_ADDR
+        return bytes(self.bus.ram[start : start + modes_irq.PALETTE_CUE_STATE_LEN])
+
     def test_a_shot_changes_the_palette_and_leaves_the_kawari_locked(self):
         self.assertTrue(self.writer.load(self.shot, lambda: False))
         self.assertEqual(self.bus.palette_6bit(), hp._kawari_channels(self.machine))
+        self.bus.cue()
         self.writer.go()
+        self.bus.commit()
         self.writer.ack()
         self.assertEqual(self.bus.palette_6bit(), hp._kawari_channels(self.shot))
+        self.assertEqual(self.bus.copies, 1)
         self.assertFalse(self.bus.active)
         self.assertFalse(self.bus.persist_while_active)
 
-    def test_a_shot_keeps_the_spare_bytes_the_kawari_had(self):
+    def test_the_palette_waits_for_the_commit_that_shows_the_cued_frame(self):
         self.writer.load(self.shot, lambda: False)
         self.writer.go()
+        self.bus.commit()
+        self.assertEqual(self.bus.copies, 0, "a commit with no cue started the copy")
+        self.bus.cue()
+        self.assertEqual(self.bus.copies, 0, "the cue alone started the copy")
+        self.bus.commit()
+        self.assertEqual(self.bus.palette_6bit(), hp._kawari_channels(self.shot))
+        self.assertEqual(self._cue_state(), bytes(2))
+
+    def test_the_ack_waits_for_the_commit(self):
+        self.writer.load(self.shot, lambda: False)
+        self.bus.cue()
+        self.writer.go()
+        with mock.patch.object(hp.time, "sleep", side_effect=lambda _s: self.bus.commit()) as nap:
+            self.writer.ack()
+        nap.assert_called()
+        self.assertEqual(self.bus.palette_6bit(), hp._kawari_channels(self.shot))
+
+    def test_a_cue_the_c64_never_takes_fails_the_ack_and_is_withdrawn(self):
+        self.writer.load(self.shot, lambda: False)
+        self.bus.cue()
+        self.writer.go()
+        with mock.patch.object(hp, "COPY_WAIT_S", 0.0), self.assertRaises(RuntimeError):
+            self.writer.ack()
+        self.assertEqual(self._cue_state(), bytes(2))
+        self.assertFalse(self.bus.active)
+        self.bus.commit()
+        self.assertEqual(self.bus.palette_6bit(), hp._kawari_channels(self.machine))
+        self.assertTrue(any(np.array_equal(t, self.shot) for t in self._record_shows()))
+
+    def test_a_shot_keeps_the_spare_bytes_the_kawari_had(self):
+        self._show_shot()
         self.writer.ack()
         spare = [self.bus.overlay[o] for o in kawari._SPARE_OFFSETS]
         self.assertEqual(spare, [0x3F] * kawari.PALETTE_COLORS)
 
-    def test_the_copy_waits_for_the_next_window_when_one_is_already_open(self):
-        self.bus.raster_line = 252
-        self.writer.load(self.shot, lambda: False)
-        self.writer.go()
-        # 258 and 1-19 are the window that was open; 25 is the picture, and
-        # 253 the next window.
-        self.assertEqual(self.bus.copies_at, [253])
-
-    def test_the_copy_fires_as_the_window_opens(self):
-        self.bus.raster_line = 100
-        self.writer.load(self.shot, lambda: False)
-        self.writer.go()
-        self.assertEqual(self.bus.copies_at, [256])
-
-    def test_a_raster_that_cannot_be_read_does_not_hold_the_copy(self):
-        self.bus.raster_answers = False
-        self.writer.load(self.shot, lambda: False)
-        self.writer.go()
-        self.writer.ack()
-        self.assertEqual(self.bus.palette_6bit(), hp._kawari_channels(self.shot))
-
     def test_a_copy_that_never_ran_fails_the_ack(self):
         self.bus.lose_trigger = True
-        self.writer.load(self.shot, lambda: False)
-        self.writer.go()
+        self._show_shot()
         with self.assertRaises(RuntimeError):
             self.writer.ack()
         self.assertFalse(self.bus.active)
@@ -480,7 +530,19 @@ class ShotPushTest(unittest.TestCase):
         self.assertFalse(self.writer.load(self.shot, lambda: True))
         self.writer.abort()
         self.assertFalse(self.bus.active)
-        self.assertEqual(self.bus.copies_at, [])
+        self.assertEqual(self.bus.copies, 0)
+
+    def test_an_abort_withdraws_the_cue(self):
+        self.writer.load(self.shot, lambda: False)
+        self.bus.cue()
+        self.writer.go()
+        self.writer.abort()
+        later = self.machine.copy()
+        later[3] = (0, 0, 0)
+        self.assertTrue(self.writer.load(later, lambda: False))
+        self.bus.commit()
+        self.assertEqual(self.bus.copies, 0, "the withdrawn cue copied the next shot's table")
+        self.assertEqual(self._cue_state(), bytes(2))
 
     def test_until_the_ack_the_record_names_both_tables(self):
         self.writer.load(self.shot, lambda: False)
@@ -488,15 +550,16 @@ class ShotPushTest(unittest.TestCase):
         self.assertEqual(len(shows), 2)
         np.testing.assert_array_equal(shows[0], self.machine)
         np.testing.assert_array_equal(shows[1], self.shot)
+        self.bus.cue()
         self.writer.go()
+        self.bus.commit()
         self.writer.ack()
         shows = self._record_shows()
         self.assertEqual(len(shows), 1)
         np.testing.assert_array_equal(shows[0], self.shot)
 
     def test_an_abort_after_the_copy_keeps_its_table_in_the_record(self):
-        self.writer.load(self.shot, lambda: False)
-        self.writer.go()
+        self._show_shot()
         self.writer.abort()
         later = self.machine.copy()
         later[3] = (0, 0, 0)
@@ -505,8 +568,7 @@ class ShotPushTest(unittest.TestCase):
         self.assertTrue(any(np.array_equal(t, self.shot) for t in shows))
 
     def test_a_run_that_died_mid_shot_has_its_palette_put_back(self):
-        self.writer.load(self.shot, lambda: False)
-        self.writer.go()
+        self._show_shot()
         found = kawari.probe(self.bus)
         assert found is not None
         with self.assertLogs("c64cast.hw.hardware_palette", level="WARNING"):
@@ -588,7 +650,7 @@ class DeadRunTest(unittest.TestCase):
         scene[8] = (kawari.to_8bit(10), kawari.to_8bit(30), kawari.to_8bit(60))
         found = kawari.probe(self.api)
         assert found is not None
-        hp.KawariPaletteWriter(found, kawari_palette_record_path(), reads_track_the_beam=True).push(
+        hp.KawariPaletteWriter(found, kawari_palette_record_path(), playback_reads=self.api).push(
             scene
         )
         self.record = kawari_palette_record_path()

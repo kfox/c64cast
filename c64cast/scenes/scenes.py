@@ -1790,7 +1790,18 @@ class VideoScene(MediaFileMixin, Scene):
         from c64cast.hw.hardware_palette import ShotPusher
 
         assert self.source is not None and self.display_mode is not None
-        pusher = ShotPusher(control)
+        cue = None
+        if control.cues_frames:
+            mode = self.display_mode
+            if not (isinstance(mode, BitmapDisplayMode) and mode.cues_palette_copies):
+                log.info(
+                    "video: the Kawari follows shots only in a double-buffered "
+                    "bitmap mode; %s keeps one palette for the video",
+                    mode.name,
+                )
+                return
+            cue = mode.cue_palette_copy
+        pusher = ShotPusher(control, cue)
         self.source.shot_tracker = PaletteShotTracker(
             self.display_mode.quantizer_input,
             pusher.ready,

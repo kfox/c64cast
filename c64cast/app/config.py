@@ -2087,7 +2087,8 @@ class ColorCfg:
             "the picture drifts away from the current one, as in a dissolve. "
             "Shots shorter than 1.3 s on an Ultimate, or 0.5 s on a Kawari, keep "
             "the colors of the shot before. A Kawari follows shots only behind a "
-            "TeensyROM+; behind an Ultimate II+ a video keeps one palette. "
+            "TeensyROM+ and in a double-buffered bitmap display mode; elsewhere "
+            "a video keeps one palette. "
             "Video scenes only."
         },
     )

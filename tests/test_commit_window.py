@@ -26,6 +26,7 @@ from c64cast.audio.audio_handlers import (
     RING_BUFFER_ADDR,
     RING_BUFFER_END,
 )
+from c64cast.hw import kawari
 from c64cast.hw.api import Ultimate64API
 from c64cast.hw.backend import HardwareProfile
 from c64cast.hw.c64 import (
@@ -94,10 +95,12 @@ DISPATCHERS = (
 
 
 def prime_reu(mem, *, mhires: bool) -> None:
-    """A REU dispatcher with a copied frame waiting for its commit."""
+    """A REU dispatcher with a copied frame waiting for its commit, cued to
+    start a palette copy, the commit's longest path."""
     for i, b in enumerate(modes_irq.BANK_SWAP_STATE_INIT):
         mem[modes_irq.BANK_SWAP_STATE_ADDR + i] = b
     mem[modes_irq._COPIED] = 1
+    mem[modes_irq._SNAPSHOT_CUE] = 1
     if mhires:
         color = modes_irq._SNAPSHOT + MHIRES_TRACKER_OFF_COLOR_REGS
         dest, length = SCREEN.COLOR_RAM, REU_VIDEO_BITMAP_COLOR_LEN
@@ -107,8 +110,10 @@ def prime_reu(mem, *, mhires: bool) -> None:
 
 
 def prime_page_flip(mem, *, flicker: bool) -> None:
-    """A host-DMA or flicker page flip with a staged frame; the flicker phase
-    is set so this field's toggle lands on phase 0, the one it commits on."""
+    """A host-DMA or flicker page flip with a staged frame, cued to start a
+    palette copy; the flicker phase is set so this field's toggle lands on
+    phase 0, the one it commits on."""
+    mem[modes_irq.PALETTE_CUE_ADDR] = 1
     tracker = [0x05, DD00_BANK_2, 0x01]
     if flicker:
         tracker += [0x01, D018_HIRES_PAGE_A, D018_HIRES_PAGE_B]
@@ -119,7 +124,8 @@ def prime_page_flip(mem, *, flicker: bool) -> None:
 def run_commit(handler: bytes, *, prime, line: int) -> list[tuple[str, int]]:
     """One raster IRQ at `line` through `handler`, its state set by `prime`.
 
-    Returns each $DD00 / $D020 / $D021 write and each REU chunk's end, stamped
+    Returns each $DD00 / $D020 / $D021 write, the write that starts a Kawari
+    palette copy ("palette"), and each REU chunk's end, stamped
     in cycles from the end of the dispatcher's `LDA $D012`, plus a "row0"
     event at the end of the chunk that completes cell row 0's colors. A chunk
     halts the CPU for its length, which py65 does not model, so the stamps add
@@ -137,7 +143,12 @@ def run_commit(handler: bytes, *, prime, line: int) -> list[tuple[str, int]]:
     mem[CIA1.ICR] = 0x00
 
     pending: list[str] = []
-    for name, address in (("dd00", CIA2.PORT_A), ("d020", 0xD020), ("d021", 0xD021)):
+    for name, address in (
+        ("dd00", CIA2.PORT_A),
+        ("d020", 0xD020),
+        ("d021", 0xD021),
+        ("palette", kawari.VIDEO_MEM_1_VAL),
+    ):
         mem.subscribe_to_write([address], lambda _a, _v, name=name: pending.append(name))
     mem.subscribe_to_write([REU.COMMAND], lambda _a, _v: pending.append("chunk"))
     length = {"lo": 0}
@@ -232,7 +243,9 @@ class BorderCommitTest(unittest.TestCase):
                 names, d020, shown = run_border_commit(
                     handler, border=0x06, shown=BORDER_STALE | 0x06, line=0
                 )
-                self.assertEqual([n for n in names if n != "chunk"], ["dd00", "d020"])
+                self.assertEqual(
+                    [n for n in names if n not in ("chunk", "palette")], ["dd00", "d020"]
+                )
                 self.assertEqual((d020, shown), (0x06, 0x06))
 
     def test_a_changed_border_is_written(self):
@@ -517,6 +530,16 @@ class CommitBudgetTest(unittest.TestCase):
                     latest_safe_read_line(worst),
                     f"{deadline_write} lands {worst} cycles after the read on line {last}",
                 )
+
+    def test_every_handler_starts_a_cued_palette_copy_before_the_first_badline(self):
+        """The palette is the border's color source too, so its copy has the
+        border's deadline."""
+        for name, handler, prime, _ in HANDLERS:
+            with self.subTest(handler=name):
+                last = last_commit_line(handler, prime)
+                events = run_commit(handler, prime=prime, line=last)
+                own = next(t for n, t in events if n == "palette")
+                self.assertLessEqual(last, latest_safe_read_line(worst_case_cycles(own)))
 
     def test_the_full_window_was_too_long_for_mhires(self):
         """Pins the measurement behind MHIRES_COMMIT_LAST_SAFE_LINE: the

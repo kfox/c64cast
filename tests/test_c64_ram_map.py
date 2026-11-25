@@ -205,6 +205,13 @@ _REGIONS: tuple[Region, ...] = (
     ),
     Region(
         "bank_swap",
+        "Kawari palette cue + the REU snapshot's copy of it",
+        mi.PALETTE_CUE_STATE_ADDR,
+        mi.PALETTE_CUE_STATE_LEN,
+        f"{_MI}:PALETTE_CUE_STATE_ADDR",
+    ),
+    Region(
+        "bank_swap",
         "REU dispatcher state + tracker snapshot",
         mi.BANK_SWAP_STATE_ADDR,
         mi.BANK_SWAP_STATE_LEN,

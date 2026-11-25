@@ -472,7 +472,9 @@ class HiresDisplayMode(BitmapDisplayMode):
             api.write_region(
                 BORDER_SHOWN_ADDR, bytes([BORDER_STALE | (bg & 0x0F)]), region_id=RegionID.VIC_D020
             )
-            push_bitmap_via_reu(api, bitmap_bytes, screen_bytes, bg, self._reu_slot)
+            push_bitmap_via_reu(
+                api, bitmap_bytes, screen_bytes, bg, self._reu_slot, cue=self._take_palette_cue()
+            )
             self._reu_slot += 1
             return
         if self.double_buffer:

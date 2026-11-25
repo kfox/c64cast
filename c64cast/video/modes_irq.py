@@ -44,6 +44,7 @@ from c64cast.hw.c64 import (
     halt_quantum_bytes,
 )
 from c64cast.hw.irq_unhook import confirm, unhook_raster_irq
+from c64cast.hw.kawari import COPY_STAGED_PALETTE_ASM
 
 log = logging.getLogger(__name__)
 
@@ -232,6 +233,28 @@ BANK_SWAP_STATE_INIT = bytes([CIA2.PORT_A_BANK_0, 0x00, 0x00, BORDER_STALE])
 assert BANK_SWAP_STATE_ADDR + len(BANK_SWAP_STATE_INIT) == _SNAPSHOT
 BANK_SWAP_STATE_LEN = len(BANK_SWAP_STATE_INIT) + MHIRES_FRAME_TRACKER_LEN
 
+# A shot's palette, staged in a VIC-II Kawari, goes on screen with the shot's
+# first frame: the commit that flips to that frame starts the copy
+# (kawari.COPY_STAGED_PALETTE_ASM). The host cues it by writing a nonzero
+# byte here in the same DMA as that frame's tracker, starting a byte early
+# (`arm_frame`), so the C64 sees the cue and the frame together or neither.
+# Every other frame's write starts at the tracker and leaves the cue alone, so
+# a cued frame that a newer one replaces before it is shown hands the cue on.
+#
+# The page flips commit the live tracker and take the cue from here. The REU
+# dispatchers commit a snapshot fields after the copy began, by when a newer
+# frame may be cued, so each snapshot moves the cue into its own byte below
+# and its commit fires that one.
+#
+# Both bytes are zero once the copy has started. Until then the Kawari's
+# registers have to hold the staging's setup, so the host waits for that
+# before it reads the palette back.
+PALETTE_CUE_STATE_ADDR = 0xC6FE
+PALETTE_CUE_STATE_LEN = 2
+_SNAPSHOT_CUE = PALETTE_CUE_STATE_ADDR
+PALETTE_CUE_ADDR = PALETTE_CUE_STATE_ADDR + 1
+assert PALETTE_CUE_ADDR + 1 == FRAME_TRACKER_ADDR
+
 # The audio pump's entry points the merged dispatchers route to.
 #
 # The bank-swap dispatcher at $C500 sends non-raster IRQs (CIA #1) somewhere.
@@ -278,12 +301,21 @@ PUMP_BODY_STUB = bytes([0x60])  # RTS
 #
 # A flip is invisible from the IRQ line through RASTER_COMMIT_LAST_SAFE_LINE,
 # i.e. $D012 in [251, 255] u [0, 43]; a commit that writes after its flip ends
-# earlier (HIRES_COMMIT_LAST_SAFE_LINE, MHIRES_COMMIT_LAST_SAFE_LINE). Adding 5
-# rotates that split range into a contiguous 0..48, which is why the check
-# costs one compare and one branch instead of two of each.
+# earlier (PAGE_FLIP_COMMIT_LAST_SAFE_LINE, HIRES_COMMIT_LAST_SAFE_LINE,
+# MHIRES_COMMIT_LAST_SAFE_LINE). Adding 5 rotates that split range into a
+# contiguous 0..48, which is why the check costs one compare and one branch
+# instead of two of each.
 _RASTER_GATE_BIAS = (0x100 - RASTER_VBLANK_LINE) & 0xFF  # $05
 _RASTER_GATE_LIMIT = _RASTER_GATE_BIAS + RASTER_COMMIT_LAST_SAFE_LINE + 1  # $31
 assert _RASTER_GATE_LIMIT <= 0xFF
+
+# The last raster line a page flip's commit may start on. A cued Kawari
+# palette copy starts 24 cycles after its flip and colors the picture's first
+# line too, and under the flip's worst case a commit read on line 43 started
+# it on line 51. The worst case is computed from these bytes in
+# tests/test_commit_window.py.
+PAGE_FLIP_COMMIT_LAST_SAFE_LINE = RASTER_COMMIT_LAST_SAFE_LINE - 1
+_PAGE_FLIP_GATE_LIMIT = _RASTER_GATE_BIAS + PAGE_FLIP_COMMIT_LAST_SAFE_LINE + 1  # $30
 
 # $D012 is 8 bits and cannot tell line n from line n+256, but every line that
 # aliases into the window is below the picture on both systems: NTSC 256-262
@@ -474,13 +506,14 @@ def _bank_swap_dispatcher(
 
     * **Commit** the frame the hidden bank holds, and only while the raster
       gate says the beam is outside the picture: write bg0, flip $DD00 to the
-      hidden bank, write the border if it changed, copy the ``after_flip``
-      families. Out of the window the
-      frame waits for the next field, and nothing is copied over it.
+      hidden bank, write the border if it changed, start the frame's palette
+      copy if it was cued, copy the ``after_flip`` families. Out of the window
+      the frame waits for the next field, and nothing is copied over it.
     * **Copy** a staged frame (ready flag set) into the now-hidden bank: clear
-      the ready flag, snapshot the tracker, copy the ``hidden`` families, mark
-      the bank copied. A host that re-arms during the copy leaves the flag
-      set, and its frame is copied after this one is shown.
+      the ready flag, take the palette cue, snapshot the tracker, copy the
+      ``hidden`` families, mark the bank copied. A host that re-arms during
+      the copy leaves the flag set, and its frame is copied after this one is
+      shown.
 
     Splitting them is what keeps the flip in vblank. The copy takes several
     fields (about 40 ms of chunks for an mhires frame at the 12 kHz default),
@@ -577,6 +610,12 @@ def _bank_swap_dispatcher(
             STA ${_DISPLAYED_BANK:04X}
             STA ${CIA2.PORT_A:04X}
             {border}
+            LDA ${_SNAPSHOT_CUE:04X}
+            BEQ cue_done
+            {COPY_STAGED_PALETTE_ASM}
+            LDA #$00
+            STA ${_SNAPSHOT_CUE:04X}
+        cue_done:
             {commit_families}
             LDA #$00
             STA ${_COPIED:04X}
@@ -587,6 +626,12 @@ def _bank_swap_dispatcher(
         snapshot:
             LDA #$00
             STA ${ready:04X}
+            LDA ${PALETTE_CUE_ADDR:04X}
+            BEQ snapshot_regs
+            STA ${_SNAPSHOT_CUE:04X}
+            LDA #$00
+            STA ${PALETTE_CUE_ADDR:04X}
+        snapshot_regs:
             LDX #${tracker_len - 1:02X}
         snapshot_byte:
             LDA ${FRAME_TRACKER_ADDR:04X},X
@@ -650,19 +695,20 @@ def _hires_dispatcher(
 # after the flip, and the chunk holding cell row 0's colors has to land before
 # row 0's badline (51) fetches them, or that frame shows the new bitmap under
 # the previous frame's colors in the top row. From the raster read to the end
-# of that chunk the handler spends about 165 cycles of its own; audio NMIs at
+# of that chunk the handler spends about 195 cycles of its own, 30 of them a
+# cued Kawari palette copy started ahead of the color RAM; audio NMIs at
 # the fastest rate the streamer arms take over half the CPU on top of that,
 # and one audio-ring write's DMA halt can land in it. That comes to about 11
 # PAL lines, so a commit read at the end of line 45 finished the chunk on line 57. The
 # worst case is computed from these bytes in tests/test_commit_window.py.
-MHIRES_COMMIT_LAST_SAFE_LINE = 38
+MHIRES_COMMIT_LAST_SAFE_LINE = 37
 # The same with BANK_SWAP_CHUNK_SIZE_SHORT chunks: row 0's colors take
 # two of them, whose second trigger and fixed REC cost land past line 50 from
-# a read on line 38.
-MHIRES_COMMIT_LAST_SAFE_LINE_SHORT_CHUNKS = 37
+# a read on line 37.
+MHIRES_COMMIT_LAST_SAFE_LINE_SHORT_CHUNKS = 36
 # The same again when each REU register write is read back: the read-backs
-# before those two triggers land past line 50 from a read on line 37.
-MHIRES_COMMIT_LAST_SAFE_LINE_VERIFIED = 36
+# before those two triggers land past line 50 from a read on line 36.
+MHIRES_COMMIT_LAST_SAFE_LINE_VERIFIED = 35
 
 
 def _mhires_dispatcher(
@@ -725,7 +771,8 @@ def bank_swap_irq_handler(profile: HardwareProfile, *, mhires: bool, pump: bool)
 # frame is whole — tear-free at the same frame rate.
 #
 # Unlike the REU handlers, this does NO in-IRQ DMA — it just writes $D021 (bg0)
-# and flips $DD00 from a tiny 3-byte tracker. So the swap lands cleanly inside
+# and flips $DD00 from a tiny 3-byte tracker, then starts a cued palette copy
+# (PALETTE_CUE_ADDR). So the swap lands cleanly inside
 # vblank with no past-vblank overrun → no shimmer, and text overlays folded into
 # the bitmap render crisply. NMI audio lives on
 # the $FFFA vector, independent of this $0314 raster IRQ, so they coexist; the
@@ -747,7 +794,7 @@ HOSTDMA_TRACKER_OFF_READY = 2  # $C702
 HOSTDMA_TRACKER_LEN = 3
 
 
-HOSTDMA_SWAP_IRQ_HANDLER = bytes(
+_HOSTDMA_SWAP_FLIP = bytes(
     [
         0xAD,
         0x19,
@@ -771,7 +818,7 @@ HOSTDMA_SWAP_IRQ_HANDLER = bytes(
         0x69,
         _RASTER_GATE_BIAS,  # 19 ADC #$05         ; 251..255 → 0..4, 0..43 → 5..48
         0xC9,
-        _RASTER_GATE_LIMIT,  # 21 CMP #$31
+        _PAGE_FLIP_GATE_LIMIT,  # 21 CMP #$30
         0xB0,
         0x11,  # 23 BCS +17 → 42      ; past the window → leave staged, chain
         0xAD,
@@ -796,8 +843,8 @@ HOSTDMA_SWAP_IRQ_HANDLER = bytes(
         0xEA,  # 42 JMP $EA31         ; chain to kernal
     ]
 )
-assert len(HOSTDMA_SWAP_IRQ_HANDLER) == 45, (
-    "HOSTDMA_SWAP_IRQ_HANDLER length changed — the three branch offsets (+35, "
+assert len(_HOSTDMA_SWAP_FLIP) == 45, (
+    "_HOSTDMA_SWAP_FLIP length changed — the three branch offsets (+35, "
     "+27 and +17, all targeting the JMP $EA31 chain at offset 42) must be "
     "recomputed before changing. See the offsets in the byte-comment column."
 )
@@ -843,7 +890,7 @@ FLICKER_TRACKER_OFF_PHASE = 3  # $C703
 FLICKER_TRACKER_OFF_D018 = 4  # $C704 / $C705, indexed by phase
 FLICKER_TRACKER_LEN = 6
 
-FLICKER_SWAP_IRQ_HANDLER = bytes(
+_FLICKER_SWAP_FLIP = bytes(
     [
         0xAD,
         0x19,
@@ -885,7 +932,7 @@ FLICKER_SWAP_IRQ_HANDLER = bytes(
         0x69,
         _RASTER_GATE_BIAS,  # 37 ADC #$05         ; 251..255 → 0..4, 0..43 → 5..48
         0xC9,
-        _RASTER_GATE_LIMIT,  # 39 CMP #$31
+        _PAGE_FLIP_GATE_LIMIT,  # 39 CMP #$30
         0xB0,
         0x11,  # 41 BCS +17 → 60      ; past the window → leave staged, chain
         0xAD,
@@ -910,8 +957,8 @@ FLICKER_SWAP_IRQ_HANDLER = bytes(
         0xEA,  # 60 JMP $EA31         ; chain to kernal
     ]
 )
-assert len(FLICKER_SWAP_IRQ_HANDLER) == 63, (
-    "FLICKER_SWAP_IRQ_HANDLER length changed — the four branch offsets (+53, "
+assert len(_FLICKER_SWAP_FLIP) == 63, (
+    "_FLICKER_SWAP_FLIP length changed — the four branch offsets (+53, "
     "+30, +27, +17, all targeting the JMP $EA31 chain at offset 60) must be "
     "recomputed before changing. See the offsets in the byte-comment column."
 )
@@ -927,27 +974,53 @@ _STA_COMMIT_REPORT = bytes([0x8D, COMMIT_REPORT_ADDR & 0xFF, COMMIT_REPORT_ADDR 
 _STA_DD00 = bytes([0x8D, CIA2.PORT_A & 0xFF, CIA2.PORT_A >> 8])
 
 
-def _reporting_commits(handler: bytes, *, flip_at: int, exit_branches: tuple[int, ...]) -> bytes:
-    """`handler` with STA $D7FF right after its STA $DD00 at `flip_at`, so
-    the bank value it commits (still in A) is reported to the host, and each
-    exit branch whose operand sits at an `exit_branches` offset retargeted
-    past the inserted three bytes onto the kernal chain."""
+# The page flips' palette cue (PALETTE_CUE_ADDR): position-independent, its
+# one branch relative. The cue is cleared after the copy starts, since the
+# host takes a clear cue to mean it may use the Kawari's registers again.
+_PAGE_FLIP_CUE = assemble(
+    f"""
+            LDA ${PALETTE_CUE_ADDR:04X}
+            BEQ cue_done
+            {COPY_STAGED_PALETTE_ASM}
+            LDA #$00
+            STA ${PALETTE_CUE_ADDR:04X}
+        cue_done:
+    """,
+    0,
+)
+
+
+def _after_flip(
+    handler: bytes, inserted: bytes, *, flip_at: int, exit_branches: tuple[int, ...]
+) -> bytes:
+    """`handler` with `inserted` right after its STA $DD00 at `flip_at`, and
+    each exit branch whose operand sits at an `exit_branches` offset
+    retargeted past it onto the kernal chain. A still holds the committed
+    bank value where `inserted` begins."""
     chain = len(handler) - 3
     out = bytearray(handler)
     for operand in exit_branches:
         assert operand + 1 + out[operand] == chain, f"branch at {operand - 1} misses the chain"
-        out[operand] += len(_STA_COMMIT_REPORT)
+        out[operand] += len(inserted)
     assert handler[flip_at : flip_at + 3] == _STA_DD00, f"no STA $DD00 at {flip_at}"
     after_flip = flip_at + len(_STA_DD00)
-    return bytes(out[:after_flip]) + _STA_COMMIT_REPORT + bytes(out[after_flip:])
+    return bytes(out[:after_flip]) + inserted + bytes(out[after_flip:])
 
 
-HOSTDMA_SWAP_REPORTING_IRQ_HANDLER = _reporting_commits(
-    HOSTDMA_SWAP_IRQ_HANDLER, flip_at=34, exit_branches=(6, 14, 24)
-)
-FLICKER_SWAP_REPORTING_IRQ_HANDLER = _reporting_commits(
-    FLICKER_SWAP_IRQ_HANDLER, flip_at=52, exit_branches=(6, 29, 32, 42)
-)
+def _hostdma_swap(inserted: bytes) -> bytes:
+    return _after_flip(_HOSTDMA_SWAP_FLIP, inserted, flip_at=34, exit_branches=(6, 14, 24))
+
+
+def _flicker_swap(inserted: bytes) -> bytes:
+    return _after_flip(_FLICKER_SWAP_FLIP, inserted, flip_at=52, exit_branches=(6, 29, 32, 42))
+
+
+HOSTDMA_SWAP_IRQ_HANDLER = _hostdma_swap(_PAGE_FLIP_CUE)
+FLICKER_SWAP_IRQ_HANDLER = _flicker_swap(_PAGE_FLIP_CUE)
+# The report is the bank value the flip just committed, still in A, so it
+# goes ahead of the cue, which clobbers A.
+HOSTDMA_SWAP_REPORTING_IRQ_HANDLER = _hostdma_swap(_STA_COMMIT_REPORT + _PAGE_FLIP_CUE)
+FLICKER_SWAP_REPORTING_IRQ_HANDLER = _flicker_swap(_STA_COMMIT_REPORT + _PAGE_FLIP_CUE)
 
 
 # Also in c64.CIA2, kept here as Python ints rather than strings for the
@@ -1041,6 +1114,9 @@ def install_bank_swap_irq(
     # so the seed has to be in place before the $D01A write below arms the
     # raster source.
     api.write_memory_file(f"{FRAME_TRACKER_ADDR:04X}", tracker)
+    # A cue an earlier scene left would start a copy on this scene's first
+    # commit, of whatever the Kawari's ports then name.
+    api.write_memory_file(f"{PALETTE_CUE_STATE_ADDR:04X}", bytes(PALETTE_CUE_STATE_LEN))
     # The REU dispatchers flip from this byte, and setup has pinned $DD00 to
     # bank 0, so it has to say bank 0 before the first commit. The host-DMA
     # handlers flip from their tracker and never read it.
@@ -1128,8 +1204,23 @@ def _stage_bitmap_and_screen(
     return offset, regs
 
 
+def arm_frame(api: C64Backend, tracker: bytes, *, cue: bool) -> None:
+    """Write a staged frame's `tracker`, cueing the Kawari palette copy with
+    it when `cue` (PALETTE_CUE_ADDR)."""
+    if cue:
+        api.write_memory_file(f"{PALETTE_CUE_ADDR:04X}", b"\x01" + tracker)
+    else:
+        api.write_memory_file(f"{FRAME_TRACKER_ADDR:04X}", tracker)
+
+
 def push_bitmap_via_reu(
-    api: C64Backend, bitmap_bytes: bytes, screen_bytes: bytes, border: int, slot: int
+    api: C64Backend,
+    bitmap_bytes: bytes,
+    screen_bytes: bytes,
+    border: int,
+    slot: int,
+    *,
+    cue: bool = False,
 ) -> None:
     """REUWRITE bitmap + screen into REU staging slot ``slot``, then DMAWRITE
     the 16-byte frame tracker to $C700-$C70F. The C64-side raster IRQ copies
@@ -1139,6 +1230,7 @@ def push_bitmap_via_reu(
     ``slot`` is the caller's rotation through REU_VIDEO_SLOTS (see the REU
     staging layout). The destinations are bank 0's; the IRQ re-aims them.
     ``border`` is the frame's $D020 value, which the IRQ writes as it flips.
+    ``cue`` starts the Kawari palette copy with this frame (`arm_frame`).
 
     Per-frame host work: 2 REUWRITEs (bus-clean) + 1 DMAWRITE (16 bytes,
     halts C64 bus for ~16 cycles — negligible vs the ~9000 cycles the
@@ -1148,7 +1240,7 @@ def push_bitmap_via_reu(
     # LAST byte, so the regs are consistent before ready flips.
     tracker = regs + bytes([border & 0x0F, 0x01])  # border, ready flag
     assert len(tracker) == FRAME_TRACKER_LEN
-    api.write_memory_file(f"{FRAME_TRACKER_ADDR:04X}", tracker)
+    arm_frame(api, tracker, cue=cue)
 
 
 def push_mhires_via_reu(
@@ -1158,6 +1250,8 @@ def push_mhires_via_reu(
     color_bytes: bytes,
     bg0: int,
     slot: int,
+    *,
+    cue: bool = False,
 ) -> None:
     """MultiHires bank-swap push. Extends push_bitmap_via_reu with a third
     REUWRITE for the 1000-byte color RAM, plus a bg0 byte in the tracker
@@ -1179,7 +1273,7 @@ def push_mhires_via_reu(
         + bytes([bg0 & 0xFF, 0x00, 0x01])  # bg0, reserved, ready flag
     )
     assert len(tracker) == MHIRES_FRAME_TRACKER_LEN
-    api.write_memory_file(f"{FRAME_TRACKER_ADDR:04X}", tracker)
+    arm_frame(api, tracker, cue=cue)
 
 
 def push_screen_via_reu(api: C64Backend, screen_bytes: bytes, dest_addr: int) -> None:

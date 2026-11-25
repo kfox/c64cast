@@ -31,13 +31,13 @@ from c64cast.video.modes_irq import (
     FLICKER_SWAP_IRQ_HANDLER,
     FLICKER_SWAP_REPORTING_IRQ_HANDLER,
     FLICKER_TRACKER_LEN,
-    FRAME_TRACKER_ADDR,
     FRAME_TRACKER_LEN,
     HOSTDMA_SWAP_IRQ_HANDLER,
     HOSTDMA_SWAP_REPORTING_IRQ_HANDLER,
     HOSTDMA_TRACKER_LEN,
     REU_VIDEO_BITMAP_LEN,
     REU_VIDEO_BITMAP_SCREEN_LEN,
+    arm_frame,
     install_bank_swap_irq,
     mask_irq_sources,
     uninstall_bank_swap_irq,
@@ -173,6 +173,7 @@ class BitmapDisplayMode(DisplayMode):
     _reports_commits: bool = False
     _awaiting_commit: int | None = None
     _commit_timeout_logged: bool = False
+    _palette_cue: bool = False
     # Both set by the subclasses' __init__.
     use_reu_staged: bool
     _blend_table: BlendTable | None
@@ -202,6 +203,7 @@ class BitmapDisplayMode(DisplayMode):
         """install_bank_swap_irq, recorded for teardown(). Recorded first, so
         an install the link cuts short is still unhooked."""
         self._bank_swap_hooked = True
+        self._palette_cue = False
         install_bank_swap_irq(
             api,
             handler_bytes,
@@ -209,6 +211,21 @@ class BitmapDisplayMode(DisplayMode):
             audio_pump_active=audio_pump_active,
             tracker_init=tracker_init,
         )
+
+    @property
+    def cues_palette_copies(self) -> bool:
+        """Whether a staged Kawari palette copy can ride a frame: only a swap
+        IRQ commits frames, and starts the copy as it does."""
+        return self._bank_swap_hooked
+
+    def cue_palette_copy(self) -> None:
+        """Start the staged Kawari palette copy in the commit that shows the
+        next frame pushed."""
+        self._palette_cue = True
+
+    def _take_palette_cue(self) -> bool:
+        cue, self._palette_cue = self._palette_cue, False
+        return cue
 
     def teardown(self, api: C64Backend) -> None:
         if not self._bank_swap_hooked:
@@ -297,7 +314,7 @@ class BitmapDisplayMode(DisplayMode):
         bytes, not when the C64 has flipped: `_await_page_flip` is what tells
         the next push the flip has happened."""
         tracker = bytes([bg0 & 0x0F, dd00_value & 0xFF, 0x01])
-        api.write_memory_file(f"{FRAME_TRACKER_ADDR:04X}", tracker)
+        arm_frame(api, tracker, cue=self._take_palette_cue())
         self._note_armed(dd00_value)
 
     def _flicker_swap_target(self) -> tuple[int, int, int, int, int, int, int, int]:
@@ -346,7 +363,7 @@ class BitmapDisplayMode(DisplayMode):
         written: the handler owns $C703 (phase) and the page pair at $C704 is
         constant for the scene, so re-sending them would fight the alternation."""
         tracker = self._flicker_tracker(bg0, dd00_value, ready=True)[:3]
-        api.write_memory_file(f"{FRAME_TRACKER_ADDR:04X}", tracker)
+        arm_frame(api, tracker, cue=self._take_palette_cue())
         self._note_armed(dd00_value)
 
     def _setup_flicker_doublebuffer(self, api: C64Backend) -> None:
