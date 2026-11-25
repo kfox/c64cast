@@ -29,6 +29,16 @@ MACHINE = np.clip(np.asarray(palette.U64_PALETTE_BGR, dtype=np.int16) + 9, 0, 25
 PINNED = list(palette.HARDWARE_PALETTE_PINNED)
 
 
+def _mock_control() -> mock.Mock:
+    """A HardwarePalette stand-in for an Ultimate."""
+    control = mock.Mock(spec=hp.HardwarePalette)
+    control.machine_palette = MACHINE.copy()
+    control.channel_bits = hp.UltimatePaletteWriter.channel_bits
+    control.load_time_s = hp.UltimatePaletteWriter.load_time_s
+    control.ack_delay_s = hp.UltimatePaletteWriter.ack_delay_s
+    return control
+
+
 class PaletteSwapTestCase(unittest.TestCase):
     """Puts the process-wide palette back after each test."""
 
@@ -61,6 +71,14 @@ class DeriveHardwarePaletteTest(PaletteSwapTestCase):
 
     def test_none_when_there_are_no_pixels(self):
         self.assertIsNone(palette.derive_hardware_palette([], MACHINE))
+
+    def test_a_six_bit_machine_gets_only_colors_it_can_show(self):
+        six_bit = np.rint(np.rint(MACHINE / 255 * 63) * 255 / 63).astype(np.uint8)
+        table = palette.derive_hardware_palette([_warm_image()], six_bit, channel_bits=6)
+        assert table is not None
+        shown = {round(q * 255 / 63) for q in range(64)}
+        self.assertLessEqual(set(np.unique(table).tolist()), shown)
+        np.testing.assert_array_equal(table[PINNED], six_bit[PINNED])
 
     def test_the_same_source_always_gets_the_same_palette(self):
         a = palette.derive_hardware_palette([_warm_image()], MACHINE)
@@ -283,7 +301,8 @@ class HardwarePaletteTest(PaletteSwapTestCase):
         patcher = mock.patch.object(hp.uci, "set_palette_rgb", side_effect=self._set)
         patcher.start()
         self.addCleanup(patcher.stop)
-        self.control = hp.HardwarePalette(cast(Ultimate64API, self.api), MACHINE)
+        api = cast(Ultimate64API, self.api)
+        self.control = hp.HardwarePalette(api, hp.UltimatePaletteWriter(api), MACHINE)
         self.api.hardware_palette = self.control
         self.api.add_reset_listener(self.control.after_reset)
         self.scene_table = MACHINE.copy()
@@ -566,6 +585,161 @@ class ProvisionTest(unittest.TestCase):
         )
 
 
+class _FakeWriter:
+    """A `PaletteWriter` for a machine other than an Ultimate."""
+
+    device = "the test machine"
+    channel_bits = 6
+    load_time_s = 0.02
+    ack_delay_s = 0.0
+    unreadable = "the test machine did not answer"
+
+    def __init__(self, machine: np.ndarray | None) -> None:
+        self.machine = machine
+        self.pushes: list[np.ndarray] = []
+        self.answers: list[bool] = []
+        self.watched: list = []
+
+    def read_machine(self) -> np.ndarray | None:
+        return self.machine
+
+    def watch_resets(self, callback) -> None:
+        self.watched.append(callback)
+
+    def unwatch_resets(self, callback) -> None:
+        self.watched.remove(callback)
+
+    def push(self, table_bgr: np.ndarray) -> bool:
+        self.pushes.append(np.asarray(table_bgr).copy())
+        return self.answers.pop(0) if self.answers else True
+
+    def load(self, table_bgr, stop) -> bool:
+        return True
+
+    def go(self) -> None:
+        pass
+
+    def ack(self) -> None:
+        pass
+
+    def abort(self) -> None:
+        pass
+
+
+class PaletteWriterTest(PaletteSwapTestCase):
+    """The controller and provisioning drive any machine through its writer."""
+
+    def setUp(self):
+        super().setUp()
+        self.writer = _FakeWriter(MACHINE.copy())
+        self.api = mock_backend()
+        self.api.hardware_palette = None
+        patcher = mock.patch.object(hp, "_writer_for", return_value=self.writer)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _provision(self) -> hp.HardwarePalette | None:
+        with self.assertLogs("c64cast.hw.hardware_palette", level="INFO"):
+            return hp.provision_hardware_palette(
+                self.api, _cfg(SceneCfg(type="video")), is_ensemble=False
+            )
+
+    def test_provisioning_installs_a_controller_for_the_writers_machine(self):
+        control = self._provision()
+        assert control is not None
+        self.assertIs(self.api.hardware_palette, control)
+        self.assertEqual(self.writer.watched, [control.after_reset])
+        self.assertEqual(control.channel_bits, 6)
+        np.testing.assert_array_equal(control.machine_palette, MACHINE)
+
+    def test_a_machine_that_cannot_be_read_names_the_writers_reason(self):
+        self.writer.machine = None
+        with self.assertLogs("c64cast.hw.hardware_palette", level="WARNING") as logs:
+            self.assertIsNone(
+                hp.provision_hardware_palette(
+                    self.api, _cfg(SceneCfg(type="video")), is_ensemble=False
+                )
+            )
+        self.assertIn("the test machine did not answer", logs.output[0])
+
+    def test_pushes_go_through_the_writer_and_a_failure_names_its_machine(self):
+        control = self._provision()
+        assert control is not None
+        table = MACHINE.copy()
+        table[8] = (30, 95, 175)
+        self.writer.answers = [False]
+        with self.assertLogs("c64cast.hw.hardware_palette", level="WARNING") as logs:
+            self.assertFalse(control.show(table, "scene"))
+        np.testing.assert_array_equal(self.writer.pushes[0], table)
+        self.assertIn("showing the test machine's own palette", logs.output[-1])
+
+    def test_restore_stops_watching_resets(self):
+        control = self._provision()
+        assert control is not None
+        control.restore()
+        self.assertEqual(self.writer.watched, [])
+        self.assertIsNone(self.api.hardware_palette)
+
+
+class AutoTest(unittest.TestCase):
+    """ "auto" is a default nobody asked for: it never warns or refuses."""
+
+    def setUp(self):
+        patcher = mock.patch("c64cast.hw.hw_provision.read_active_palette")
+        self.read = patcher.start()
+        self.addCleanup(patcher.stop)
+        self.read.return_value = tuple(map(tuple, MACHINE))
+
+    def _cfg(self, *scenes: SceneCfg) -> Config:
+        cfg = Config()
+        cfg.color.hardware_palette = "auto"
+        cfg.scenes = list(scenes)
+        return cfg
+
+    def _assert_quiet_skip(self, api, cfg, reason: str) -> None:
+        with self.assertLogs("c64cast.hw.hardware_palette", level="INFO") as logs:
+            self.assertIsNone(hp.provision_hardware_palette(api, cfg, is_ensemble=False))
+        self.assertEqual([r.levelname for r in logs.records], ["INFO"])
+        self.assertIn(reason, logs.output[0])
+
+    def test_pushes_where_it_can(self):
+        with self.assertLogs("c64cast.hw.hardware_palette", level="INFO"):
+            control = hp.provision_hardware_palette(
+                _u64(), self._cfg(SceneCfg(type="video")), is_ensemble=False
+            )
+        self.assertIsNotNone(control)
+
+    def test_another_machine_is_an_info_line(self):
+        self._assert_quiet_skip(object(), self._cfg(SceneCfg(type="video")), "Ultimate 64")
+
+    def test_firmware_without_the_command_is_an_info_line(self):
+        self.read.return_value = None
+        self._assert_quiet_skip(_u64(), self._cfg(SceneCfg(type="video")), "did not answer")
+
+    def test_a_named_source_scene_still_gets_the_warning(self):
+        cfg = self._cfg(
+            SceneCfg(type="video"), SceneCfg(type="slideshow", color={"hardware_palette": "source"})
+        )
+        with self.assertLogs("c64cast.hw.hardware_palette", level="WARNING"):
+            hp.provision_hardware_palette(object(), cfg, is_ensemble=False)
+
+    def test_scene_types_that_cannot_push_go_unmentioned(self):
+        with self.assertNoLogs("c64cast.hw.hardware_palette", level="INFO"):
+            self.assertIsNone(
+                hp.provision_hardware_palette(
+                    _u64(), self._cfg(SceneCfg(type="waveform")), is_ensemble=False
+                )
+            )
+
+    def test_yields_to_force_palette_and_flicker_tolerance(self):
+        for field, value in (("force_palette", True), ("flicker_tolerance", "subtle")):
+            with self.subTest(field):
+                cfg = self._cfg(SceneCfg(type="video"))
+                setattr(cfg.color, field, value)
+                scene_factory.validate_hardware_palette_cfg(cfg)
+                self.assertEqual(hp.wanting_scene_types(cfg), [])
+
+
 class ConfigRefusalTest(unittest.TestCase):
     def test_a_bad_value_is_refused(self):
         cfg = Config()
@@ -646,8 +820,7 @@ class SlideshowPushTest(unittest.TestCase):
             img = np.zeros((40, 64, 3), dtype=np.uint8)
             img[:] = color
             cv2.imwrite(os.path.join(tmp.name, name), img)
-        self.control = mock.Mock(spec=hp.HardwarePalette)
-        self.control.machine_palette = MACHINE.copy()
+        self.control = _mock_control()
         api = mock_backend()
         api.hardware_palette = self.control
         mode = mock.MagicMock()
@@ -721,18 +894,44 @@ class SlideshowPushTest(unittest.TestCase):
         self.control.release.assert_not_called()
         self.assertFalse(self.scene.pushes_hardware_palette)
 
+    def test_auto_pushes_as_source_does(self):
+        self.scene._color.hardware_palette = "auto"
+        self.assertTrue(self.scene.pushes_hardware_palette)
+        self.scene.setup()
+        self.addCleanup(self.scene.teardown)
+        self.control.show.assert_called_once()
+
+    def test_auto_beside_flicker_tolerance_never_touches_the_pusher(self):
+        self.scene._color.hardware_palette = "auto"
+        self.scene._color.flicker_tolerance = "subtle"
+        self.scene.setup()
+        self.scene.teardown()
+        self.control.show.assert_not_called()
+        self.assertFalse(self.scene.pushes_hardware_palette)
+
 
 class PushSourcePaletteTest(unittest.TestCase):
     def test_a_source_with_no_pixels_puts_the_machines_palette_back(self):
         """A pre-scan that sampled nothing leaves nothing to fit."""
         from c64cast.scenes.scenes import _push_source_palette
 
-        control = mock.Mock(spec=hp.HardwarePalette)
-        control.machine_palette = MACHINE.copy()
+        control = _mock_control()
         scene = mock.MagicMock()
         _push_source_palette(scene, control, [])
         control.show_machine.assert_called_once_with()
         control.show.assert_not_called()
+
+    def test_the_table_is_fitted_to_the_bits_its_machine_shows(self):
+        from c64cast.scenes.scenes import _push_source_palette
+
+        control = _mock_control()
+        control.channel_bits = 6
+        scene = mock.MagicMock()
+        scene.display_mode.quantizer_input.side_effect = lambda img: img
+        _push_source_palette(scene, control, [_warm_image()])
+        table = control.show.call_args.args[0]
+        shown = {round(q * 255 / 63) for q in range(64)}
+        self.assertLessEqual(set(np.unique(table).tolist()), shown)
 
 
 class VideoPushTest(unittest.TestCase):
@@ -742,8 +941,7 @@ class VideoPushTest(unittest.TestCase):
         from c64cast.app.config import ColorCfg
         from c64cast.scenes.scenes import VideoScene
 
-        self.control = mock.Mock(spec=hp.HardwarePalette)
-        self.control.machine_palette = MACHINE.copy()
+        self.control = _mock_control()
         api = mock_backend()
         api.hardware_palette = self.control
         self.mode = mock.MagicMock()
@@ -792,6 +990,13 @@ class VideoPushTest(unittest.TestCase):
         self.scene.teardown()
         self.control.release.assert_called_once()
         self.control.show_machine.assert_not_called()
+
+    def test_auto_pre_scans_and_pushes_as_source_does(self):
+        self.scene._color.hardware_palette = "auto"
+        self.assertTrue(self.scene.pushes_hardware_palette)
+        self.scene.setup()
+        self.assertIsNotNone(self.prescan.call_args.kwargs["frames"])
+        self.control.show.assert_called_once()
 
     def test_setting_the_same_video_up_again_does_not_pre_scan_again(self):
         self.assertTrue(self.scene.pushes_hardware_palette)
@@ -854,7 +1059,7 @@ class SettleForTest(unittest.TestCase):
     that scene pushes its own."""
 
     def setUp(self):
-        self.control = mock.Mock(spec=hp.HardwarePalette)
+        self.control = _mock_control()
         self.api = mock.Mock()
         self.api.hardware_palette = self.control
 

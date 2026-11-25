@@ -31,7 +31,9 @@ target / capture device / SID model without a per-run ``-u`` (an explicit
 ``-u`` / ``C64CAST_URL`` still wins, applied afterward). And CLI flags reach
 the config through the shared ``config.merge_cli`` — quick playback sets only
 its own *policy* first (no loop, no interleaved videos) so ``--loop`` still
-overrides it. It must not hand-pick a subset of flags: it used to, and twelve
+overrides it. Its one quality default, ``[color].hardware_palette = "auto"``,
+sits *below* the machine settings instead, so a saved ``[color]`` choice wins.
+It must not hand-pick a subset of flags: it used to, and twelve
 mapped flags plus ``C64CAST_DMA_PASSWORD`` were accepted and silently
 dropped. ``tests/test_quickcast.py`` asserts against ``CLI_TO_CFG`` itself,
 so a newly mapped flag is covered on the day it's added.
@@ -438,6 +440,9 @@ def build_config(args: argparse.Namespace) -> Config:
     the shared :mod:`c64cast.app.connect` decomposer — the same scheme-aware path
     the config-driven CLI uses — rather than being treated as a bare URL."""
     cfg = Config()
+    # The best colors the machine can show. Below the machine settings, so a
+    # saved [color] choice still wins.
+    cfg.color.hardware_palette = "auto"
     # The lowest layer, applied before the arg-driven field sets below, so quick
     # playback inherits it and an explicit -u/--url still wins.
     apply_machine_settings(cfg)

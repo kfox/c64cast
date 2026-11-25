@@ -50,8 +50,9 @@ from c64cast.video.palette import (
     ColorMapAccumulator,
     FrameSampler,
     derive_hardware_palette,
+    wants_hardware_palette,
 )
-from c64cast.video.palette_shots import PaletteShot, PaletteShotTracker
+from c64cast.video.palette_shots import PaletteShot, PaletteShotTracker, min_stretch_s
 from c64cast.video.rolling_palette import RollingForcePalette
 from c64cast.video.shots import ShotFit, ShotTracker
 from c64cast.video.video import (
@@ -543,7 +544,7 @@ def _scene_hardware_palette(
 ) -> HardwarePalette | None:
     """The run's palette pusher, when this scene's `[color].hardware_palette`
     asks for one and the run could provision it."""
-    if color.hardware_palette != "source" or display_mode is None:
+    if not wants_hardware_palette(color) or display_mode is None:
         return None
     return getattr(api, "hardware_palette", None)
 
@@ -565,7 +566,9 @@ def _push_source_palette(scene: Scene, control: HardwarePalette, frames: list[np
     for f in frames:
         sampler.add(f)
     shaped = [scene.display_mode.quantizer_input(f) for f in sampler.frames]
-    table = derive_hardware_palette(shaped, control.machine_palette)
+    table = derive_hardware_palette(
+        shaped, control.machine_palette, channel_bits=control.channel_bits
+    )
     if table is None:
         control.show_machine()
     else:
@@ -1789,7 +1792,9 @@ class VideoScene(MediaFileMixin, Scene):
         assert self.source is not None and self.display_mode is not None
         pusher = ShotPusher(control)
         self.source.shot_tracker = PaletteShotTracker(
-            self.display_mode.quantizer_input, pusher.ready
+            self.display_mode.quantizer_input,
+            pusher.ready,
+            min_stretch_s=min_stretch_s(control.load_time_s),
         )
         pusher.start()
         self._shot_pusher = pusher

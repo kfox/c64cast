@@ -12,10 +12,13 @@ from collections import deque
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import cast
+from typing import TYPE_CHECKING, cast
 
 import cv2
 import numpy as np
+
+if TYPE_CHECKING:
+    from c64cast.app.config import ColorCfg
 
 log = logging.getLogger(__name__)
 
@@ -1489,12 +1492,20 @@ def suggest_palette(samples_lab: np.ndarray, max_k: int = 16) -> list[tuple[int,
 # gray axis stays the machine's own: fades end on index 0, cards and overlays
 # draw in 0 and 1, and the gray penalty and grayscale mode are written against
 # those five indices. The other eleven are re-chosen from the source.
-HARDWARE_PALETTE_CHOICES: tuple[str, ...] = ("off", "source")
+HARDWARE_PALETTE_CHOICES: tuple[str, ...] = ("off", "source", "auto")
 # The scene types that can see their content before they paint it.
 HARDWARE_PALETTE_SCENE_TYPES: tuple[str, ...] = ("video", "slideshow")
 HARDWARE_PALETTE_PINNED = GRAY_INDICES
 _HARDWARE_PALETTE_FREE = tuple(i for i in range(16) if i not in HARDWARE_PALETTE_PINNED)
 _HARDWARE_PALETTE_ITERATIONS = 20
+
+
+def wants_hardware_palette(color: ColorCfg) -> bool:
+    """Whether `color` has its scene push its own palette. "auto" yields to
+    force_palette and flicker_tolerance, which "source" refuses at load."""
+    if color.hardware_palette == "auto":
+        return not color.force_palette and color.flicker_tolerance == "off"
+    return color.hardware_palette == "source"
 
 
 class FrameSampler:
@@ -1557,7 +1568,10 @@ def _lab_to_bgr(lab: np.ndarray) -> np.ndarray:
 
 
 def derive_hardware_palette(
-    frames: Sequence[np.ndarray], base_bgr: Sequence[Sequence[int]] | np.ndarray
+    frames: Sequence[np.ndarray],
+    base_bgr: Sequence[Sequence[int]] | np.ndarray,
+    *,
+    channel_bits: int = 8,
 ) -> np.ndarray | None:
     """The 16 BGR colors to push to the machine for a source, or None when the
     frames hold no pixels.
@@ -1570,7 +1584,8 @@ def derive_hardware_palette(
     index whose own color it is nearest (a min-cost bijection), which keeps the
     color names, multicolor char mode's 0-7 per-cell range and the rest of the
     index-keyed pipeline meaningful. A free index no cluster reaches keeps its
-    base color.
+    base color. The fitted colors are rounded to the `channel_bits` the
+    machine shows, so the quantizer aims at exactly what it will emit.
     """
     samples = _sample_lab(frames)
     if samples.shape[0] == 0:
@@ -1608,7 +1623,15 @@ def derive_hardware_palette(
     free_bgr = _lab_to_bgr(free)
     for k, slot in enumerate(assign):
         out[_HARDWARE_PALETTE_FREE[int(slot)]] = free_bgr[k]
-    return out
+    return _round_to_channel_bits(out, channel_bits)
+
+
+def _round_to_channel_bits(table_bgr: np.ndarray, bits: int) -> np.ndarray:
+    """Each 8-bit channel moved to the nearest value a `bits`-bit channel
+    shows, scaled back to 8 bits the way `kawari.read_palette` scales one."""
+    top = (1 << bits) - 1
+    levels = np.rint(table_bgr.astype(np.float32) * top / 255)
+    return np.rint(levels * 255 / top).astype(np.uint8)
 
 
 def hardware_palette_error(frame_bgr: np.ndarray, table_bgr: np.ndarray) -> float:

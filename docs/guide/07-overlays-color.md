@@ -151,6 +151,12 @@ making do with one orange and a brown. The machine's own palette comes back
 before any scene that does not use the setting, and when c64cast exits. On any other machine, or older firmware, the setting is skipped with a
 warning and the show looks as it always has. It cannot be combined with
 `force_palette` or `flicker_tolerance`.
+
+`hardware_palette = "auto"` does the same wherever it can and stays quiet
+where it can't: no warning on another machine, and no refusal next to
+`force_palette` or `flicker_tolerance`, which then keep the machine's palette.
+Quick playback (`c64cast clip.mp4`) uses `"auto"` unless your machine settings
+say otherwise.
 [The Programmer's Reference Guide](https://github.com/kfox/c64cast/blob/main/docs/reference/04-display-pipeline.md#choosing-the-sixteen--hardware_palette)
 has the details.
 

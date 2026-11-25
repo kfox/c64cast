@@ -1,4 +1,4 @@
-"""`[color].hardware_palette`: pushing a scene's own 16 colors to an Ultimate 64.
+"""`[color].hardware_palette`: pushing a scene's own 16 colors to the machine.
 
 See docs/architecture/video-color.md#hardware_palettepy--pushing-a-scenes-own-16-colors-colorhardware_palette.
 """
@@ -11,17 +11,18 @@ import threading
 import time
 from collections import deque
 from collections.abc import Callable
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Protocol, cast
 
 import numpy as np
 
-from c64cast.app.config import Config, scene_and_clip_cfgs, scene_color
+from c64cast.app.config import ColorCfg, Config, scene_and_clip_cfgs, scene_color
 from c64cast.hw import uci
 
 if TYPE_CHECKING:
     from c64cast.video.palette_shots import PaletteShot
 
     from .api import Ultimate64API
+    from .backend import C64Backend
 
 log = logging.getLogger(__name__)
 
@@ -29,6 +30,48 @@ log = logging.getLogger(__name__)
 # the commands that connection may have discarded, so a push that went out
 # on it fails once.
 _PUSH_ATTEMPTS = 2
+
+
+class PaletteWriter(Protocol):
+    """One machine's way of changing the 16 colors it emits.
+
+    `push` is the checked transaction: True only when the machine took the
+    table. `load`, `go`, `ack` and `abort` are the split push `ShotPusher`
+    drives at shot cuts; `go` must not flush, so a caller that sends it behind
+    a frame's writes has the colors change on that frame. Any of the four may
+    raise on a link failure."""
+
+    #: Names the machine in log lines, as in "the Ultimate's own palette".
+    device: str
+    #: Bits per channel the machine shows; a fitted table is rounded to them.
+    channel_bits: int
+    #: How long `load` takes, which sets the shortest stretch worth a table.
+    load_time_s: float
+    #: How long after `go` the machine is ready for `ack`.
+    ack_delay_s: float
+    #: Why `read_machine` returned None, for the warning.
+    unreadable: str
+
+    def read_machine(self) -> np.ndarray | None:
+        """The 16 colors the machine shows now (BGR uint8), or None."""
+        ...
+
+    def watch_resets(self, callback: Callable[[], None]) -> None:
+        """Call `callback` after each C64 reset that puts the machine's own
+        palette back, so a scene's table can be pushed again."""
+        ...
+
+    def unwatch_resets(self, callback: Callable[[], None]) -> None: ...
+
+    def push(self, table_bgr: np.ndarray) -> bool: ...
+
+    def load(self, table_bgr: np.ndarray, stop: Callable[[], bool]) -> bool: ...
+
+    def go(self) -> None: ...
+
+    def ack(self) -> None: ...
+
+    def abort(self) -> None: ...
 
 
 def _to_rgb(table_bgr: np.ndarray) -> list[tuple[int, int, int]]:
@@ -40,18 +83,66 @@ def _table_name(table_bgr: np.ndarray) -> str:
     return f"hw-source:{digest[:6]}"
 
 
+class UltimatePaletteWriter:
+    """An Ultimate 64 or C64 Ultimate, over the UCI palette commands."""
+
+    device = "the Ultimate"
+    channel_bits = 8
+    load_time_s = 1.2
+    ack_delay_s = uci.ACK_DELAY_S
+    unreadable = (
+        "this Ultimate did not answer the UCI palette read (firmware before "
+        "3.15a, a C64 Ultimate on 1.1.0, or the Command Interface turned off)"
+    )
+
+    def __init__(self, api: Ultimate64API) -> None:
+        self._api = api
+
+    def read_machine(self) -> np.ndarray | None:
+        from .hw_provision import read_active_palette
+
+        for _ in range(_PUSH_ATTEMPTS):
+            machine = read_active_palette(self._api)
+            if machine is not None:
+                return np.asarray(machine, dtype=np.uint8)
+        return None
+
+    def watch_resets(self, callback: Callable[[], None]) -> None:
+        self._api.add_reset_listener(callback)
+
+    def unwatch_resets(self, callback: Callable[[], None]) -> None:
+        self._api.remove_reset_listener(callback)
+
+    def push(self, table_bgr: np.ndarray) -> bool:
+        rgb = _to_rgb(table_bgr)
+        return any(uci.set_palette_rgb(self._api, rgb) for _ in range(_PUSH_ATTEMPTS))
+
+    def load(self, table_bgr: np.ndarray, stop: Callable[[], bool]) -> bool:
+        return uci.load_palette(self._api, _to_rgb(table_bgr), stop=stop)
+
+    def go(self) -> None:
+        uci.go(self._api)
+
+    def ack(self) -> None:
+        uci.ack(self._api)
+
+    def abort(self) -> None:
+        uci.abort(self._api)
+
+
 class HardwarePalette:
     """Which 16 colors the machine shows, for one run.
 
-    `machine` is the palette the Ultimate shows after the run's startup reset, read back
-    over UCI; it is what every restore pushes, because the firmware's own
-    RESET_PALETTE restores its built-in table rather than a loaded .vpl. The
+    `machine` is the palette the machine shows at the run's start, read back
+    by the writer; it is what every restore pushes. On an Ultimate that is
+    after the startup reset, because the firmware's own RESET_PALETTE restores
+    its built-in table rather than a loaded .vpl. The
     quantizer's palette moves with every push (`set_host_palette`), so the
     render pipeline always aims at what the machine emits.
 
     Two tables carry the state. `_shown` is the table a scene asked for, or
     None for the machine's own; it is what the quantizer aims at. `_on_machine`
-    is the table the Ultimate is showing, or None when that is unknown because
+    is the table the machine is showing, or None when that is unknown because
     a push failed partway and the machine's answer was lost. They differ only
     between a scene's `release` and the next scene's setup, where nothing
     renders: deferring the push there is what lets a scene set up again, or
@@ -61,10 +152,11 @@ class HardwarePalette:
     listener runs on another, and none of them raises.
     """
 
-    def __init__(self, api: Ultimate64API, machine_bgr: np.ndarray) -> None:
+    def __init__(self, api: C64Backend, writer: PaletteWriter, machine_bgr: np.ndarray) -> None:
         from c64cast.video.palette import C64_PALETTE_BGR, active_host_palette_name
 
         self._api = api
+        self._writer = writer
         self._machine = np.asarray(machine_bgr, dtype=np.uint8).reshape(16, 3).copy()
         self._base_table = C64_PALETTE_BGR.copy()
         self._base_name = active_host_palette_name()
@@ -77,6 +169,18 @@ class HardwarePalette:
     def machine_palette(self) -> np.ndarray:
         """The machine's own 16 colors (BGR uint8), read after the startup reset."""
         return self._machine.copy()
+
+    @property
+    def channel_bits(self) -> int:
+        return self._writer.channel_bits
+
+    @property
+    def load_time_s(self) -> float:
+        return self._writer.load_time_s
+
+    @property
+    def ack_delay_s(self) -> float:
+        return self._writer.ack_delay_s
 
     def show(self, table_bgr: np.ndarray, scene: str) -> bool:
         """Push `table_bgr` and point the quantizer at it. False when the
@@ -119,8 +223,8 @@ class HardwarePalette:
 
     def after_reset(self) -> None:
         """A C64 reset re-applies the configured palette, so re-push the
-        scene's palette when one is showing. Registered on the API with
-        `add_reset_listener`."""
+        scene's palette when one is showing. Registered with the writer's
+        `watch_resets`."""
         with self._lock:
             self._on_machine = self._machine.copy()
             if self._shown is None or not self._enabled:
@@ -135,7 +239,7 @@ class HardwarePalette:
         """Teardown: put the machine's own palette back and detach from the
         API. Tried even after pushing was given up on, since a push that
         failed may still have landed."""
-        self._api.remove_reset_listener(self.after_reset)
+        self._writer.unwatch_resets(self.after_reset)
         if self._api.hardware_palette is self:
             self._api.hardware_palette = None
         with self._lock:
@@ -143,16 +247,17 @@ class HardwarePalette:
             self._reset_host()
             if self._machine_shows(self._machine):
                 return
+            device = self._writer.device
             if self._put_machine_back():
-                log.info("hardware_palette: restored the Ultimate's own palette")
+                log.info("hardware_palette: restored %s's own palette", device)
             else:
                 log.warning(
-                    "hardware_palette: could not put the Ultimate's own palette "
-                    "back; its next reset or power-cycle will"
+                    "hardware_palette: could not put %s's own palette back; "
+                    "its next reset or power-cycle will",
+                    device,
                 )
 
-    # The blind, split push `ShotPusher` drives at a video's shot cuts. None
-    # of these reads anything back: see `uci.load_palette`.
+    # The split push `ShotPusher` drives at a video's shot cuts.
 
     def load(self, table_bgr: np.ndarray, stop: Callable[[], bool]) -> bool:
         """Load `table_bgr` for a later `go`. False when pushing is off, when
@@ -160,9 +265,7 @@ class HardwarePalette:
         with self._lock:
             if not self._enabled:
                 return False
-            return self._blind(
-                "loading a shot's palette", uci.load_palette, _to_rgb(table_bgr), stop=stop
-            )
+            return self._blind("loading a shot's palette", self._writer.load, table_bgr, stop)
 
     def adopt(self, table_bgr: np.ndarray) -> bool:
         """Point the quantizer at the loaded table, for the frame that is
@@ -180,19 +283,19 @@ class HardwarePalette:
 
     def go(self) -> None:
         with self._lock:
-            self._blind("pushing a shot's palette", uci.go)
+            self._blind("pushing a shot's palette", self._writer.go)
 
     def ack(self) -> None:
         with self._lock:
-            self._blind("acknowledging a shot's palette", uci.ack)
+            self._blind("acknowledging a shot's palette", self._writer.ack)
 
     def abort(self) -> None:
         with self._lock:
-            self._blind("dropping a shot's palette", uci.abort)
+            self._blind("dropping a shot's palette", self._writer.abort)
 
-    def _blind(self, what: str, op: Callable[..., object], *args: object, **kwargs: object) -> bool:
+    def _blind(self, what: str, op: Callable[..., object], *args: object) -> bool:
         try:
-            done = op(self._api, *args, **kwargs)
+            done = op(*args)
         except Exception:
             log.debug("hardware_palette: %s failed", what, exc_info=True)
             self._on_machine = None
@@ -220,15 +323,15 @@ class HardwarePalette:
             self._set_host(self._base_table, self._base_name)
 
     def _push(self, table_bgr: np.ndarray) -> bool:
-        rgb = _to_rgb(table_bgr)
-        return any(uci.set_palette_rgb(self._api, rgb) for _ in range(_PUSH_ATTEMPTS))
+        return self._writer.push(table_bgr)
 
     def _give_up(self, what: str) -> None:
         self._enabled = False
         self._reset_host()
         log.warning(
-            "hardware_palette: %s; showing the Ultimate's own palette for the rest of the run",
+            "hardware_palette: %s; showing %s's own palette for the rest of the run",
             what,
+            self._writer.device,
         )
 
     @staticmethod
@@ -248,8 +351,9 @@ class ShotPusher:
     is written: a loaded table is adopted by the quantizer before the render
     and pushed after it, so both change on the same frame. A table not yet
     loaded when its frame comes is pushed on the first frame after it is. The
-    worker acknowledges a push ACK_DELAY_S after it went, and only then loads
-    the next table, since the interface holds one command."""
+    worker acknowledges a push the writer's `ack_delay_s` after it went, and
+    only then loads the next table, since the Ultimate's interface holds one
+    command."""
 
     def __init__(self, control: HardwarePalette) -> None:
         self._control = control
@@ -346,7 +450,7 @@ class ShotPusher:
     def _wait_s(self) -> float | None:
         if self._went is None:
             return None
-        return max(0.0, self._went + uci.ACK_DELAY_S - time.monotonic())
+        return max(0.0, self._went + self._control.ack_delay_s - time.monotonic())
 
     def _superseded(self, shot: PaletteShot) -> bool:
         due = self._due
@@ -370,7 +474,9 @@ class ShotPusher:
 
         with self._cond:
             shot = self._to_fit.popleft()
-        table = derive_hardware_palette(shot.frames, self._control.machine_palette)
+        table = derive_hardware_palette(
+            shot.frames, self._control.machine_palette, channel_bits=self._control.channel_bits
+        )
         if table is None:
             return
         baseline = float(np.mean([hardware_palette_error(f, table) for f in shot.frames]))
@@ -419,21 +525,33 @@ def settle_for(api: object, scene: object) -> None:
     control.show_machine()
 
 
-def wanting_scene_types(cfg: Config) -> list[str]:
-    """The type of every scene and clip that can push a palette and whose
-    effective `[color]` asks for one. Scenes that ask but cannot are named in
-    an info line."""
-    from c64cast.video.palette import HARDWARE_PALETTE_SCENE_TYPES
-
+def _scene_colors(cfg: Config) -> list[tuple[str, ColorCfg]]:
     out = []
     for _, s in scene_and_clip_cfgs(cfg):
         try:
-            wants = scene_color(cfg, s).hardware_palette == "source"
+            out.append((s.type, scene_color(cfg, s)))
         except ValueError:
             continue
-        if wants:
-            out.append(s.type)
-    unsupported = sorted({t for t in out if t not in HARDWARE_PALETTE_SCENE_TYPES})
+    return out
+
+
+def asks_for_source(cfg: Config) -> bool:
+    """Whether some scene names hardware_palette = "source" itself, rather
+    than "auto", so a palette it cannot get is worth a warning."""
+    return any(c.hardware_palette == "source" for _, c in _scene_colors(cfg))
+
+
+def wanting_scene_types(cfg: Config) -> list[str]:
+    """The type of every scene and clip that can push a palette and whose
+    effective `[color]` asks for one. Scenes that name "source" but cannot
+    push are named in an info line."""
+    from c64cast.video.palette import HARDWARE_PALETTE_SCENE_TYPES, wants_hardware_palette
+
+    colors = _scene_colors(cfg)
+    out = [t for t, c in colors if wants_hardware_palette(c)]
+    unsupported = sorted(
+        {t for t, c in colors if c.hardware_palette == "source"} - set(HARDWARE_PALETTE_SCENE_TYPES)
+    )
     if unsupported:
         log.info(
             "hardware_palette = source applies to video and slideshow scenes; "
@@ -448,52 +566,57 @@ def provision_hardware_palette(
 ) -> HardwarePalette | None:
     """Set the run up to push palettes, when any scene asks for it.
 
-    Reading the machine's palette is both the capability probe and the
-    restore snapshot: firmware without the UCI palette commands (before 3.15a,
-    and the C64 Ultimate as of 1.1.0) answers "21,UNKNOWN COMMAND", and the run
-    then renders exactly as it would without the setting, after one warning.
+    The machine's `PaletteWriter` comes from `_writer_for`. Reading the
+    machine's palette is both the capability probe and the restore snapshot:
+    firmware without the UCI palette commands (before 3.15a, and the C64
+    Ultimate as of 1.1.0) answers "21,UNKNOWN COMMAND", and the run then
+    renders exactly as it would without the setting, after one warning.
     Returns the controller, also installed as `api.hardware_palette` for the
     scenes, or None.
     """
-    from .api import Ultimate64API
-    from .hw_provision import read_active_palette
-
     if not wanting_scene_types(cfg):
         return None
     skip = None
-    if not isinstance(api, Ultimate64API) or not api.profile.supports_system_mode:
+    writer = _writer_for(api)
+    if writer is None:
         skip = "only an Ultimate 64 can change the colors it emits"
     elif cfg.debug.skip_probe:
         skip = "--skip-probe forbids reading the machine's palette first"
     elif is_ensemble:
         skip = "an ensemble shares one color pipeline across machines"
+    level = logging.WARNING if asks_for_source(cfg) else logging.INFO
     if skip is not None:
-        log.warning("hardware_palette = source: %s — skipped.", skip)
+        log.log(level, "hardware_palette: %s — skipped.", skip)
         return None
-    assert isinstance(api, Ultimate64API)
+    assert writer is not None
+    backend = cast("C64Backend", api)
 
-    machine = None
-    for _ in range(_PUSH_ATTEMPTS):
-        machine = read_active_palette(api)
-        if machine is not None:
-            break
+    machine = writer.read_machine()
     if machine is None:
-        log.warning(
-            "hardware_palette = source: this Ultimate did not answer the UCI "
-            "palette read (firmware before 3.15a, a C64 Ultimate on 1.1.0, or "
-            "the Command Interface turned off) — not pushing palettes; colors "
-            "are matched against [hardware].host_palette as before."
+        log.log(
+            level,
+            "hardware_palette: %s — not pushing palettes; colors are matched "
+            "against [hardware].host_palette as before.",
+            writer.unreadable,
         )
         return None
 
-    control = HardwarePalette(api, np.asarray(machine, dtype=np.uint8))
-    api.add_reset_listener(control.after_reset)
-    api.hardware_palette = control
+    control = HardwarePalette(backend, writer, machine)
+    writer.watch_resets(control.after_reset)
+    backend.hardware_palette = control
     log.info(
         "hardware_palette = source: video/slideshow scenes push their own 16 "
         "colors; the machine's palette is restored for every other scene and at exit"
     )
     return control
+
+
+def _writer_for(api: object) -> PaletteWriter | None:
+    from .api import Ultimate64API
+
+    if isinstance(api, Ultimate64API) and api.profile.supports_system_mode:
+        return UltimatePaletteWriter(api)
+    return None
 
 
 def restore_hardware_palette(control: HardwarePalette | None) -> None:

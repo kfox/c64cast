@@ -26,15 +26,23 @@ from c64cast.video.rolling_palette import _downscale
 from c64cast.video.shots import SHOT_CUT_RATIO, AdaptiveCutDetector
 
 FIT_S = 2.0
-# Loading a table onto the machine takes ~1.2 s (`uci.load_palette`), so a
-# stretch shorter than this keeps the colors of the one before.
-MIN_STRETCH_S = 1.3
+# A stretch that starts sooner than its table can load after the last one
+# keeps the colors of the one before. The floor keeps a machine that loads a
+# table quickly from changing colors on every rapid cut.
+MIN_STRETCH_FLOOR_S = 0.5
+_LOAD_MARGIN_S = 0.1
 # A stretch has drifted once its frames sit this many times farther from its
 # table than the frames it was fitted to, for this many frames running.
 DRIFT_RATIO = 1.6
 DRIFT_FRAMES = 5
 
 _seq = itertools.count()
+
+
+def min_stretch_s(load_time_s: float) -> float:
+    """The shortest stretch worth its own table on a machine whose writer
+    loads one in `load_time_s`."""
+    return max(MIN_STRETCH_FLOOR_S, load_time_s + _LOAD_MARGIN_S)
 
 
 class PaletteShot:
@@ -73,9 +81,12 @@ class PaletteShotTracker:
         self,
         shape: Callable[[np.ndarray], np.ndarray],
         on_ready: Callable[[PaletteShot], None],
+        *,
+        min_stretch_s: float,
     ) -> None:
         self._shape = shape
         self._on_ready = on_ready
+        self._min_stretch_s = min_stretch_s
         self._detector = AdaptiveCutDetector(ratio=SHOT_CUT_RATIO)
         self._recent: deque[tuple[float, np.ndarray]] = deque(
             maxlen=max(self._detector.window + 1, DRIFT_FRAMES)
@@ -118,7 +129,7 @@ class PaletteShotTracker:
         return None
 
     def _room_after(self, pts: float) -> bool:
-        return self._shot is None or pts - self._shot.pts >= MIN_STRETCH_S
+        return self._shot is None or pts - self._shot.pts >= self._min_stretch_s
 
     def _drifted(self, shaped: np.ndarray) -> bool:
         fit = None if self._shot is None else self._shot.fit
