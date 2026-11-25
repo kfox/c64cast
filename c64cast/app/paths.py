@@ -160,6 +160,14 @@ def run_marker_path() -> Path:
     return data_root() / "run.json"
 
 
+def kawari_palette_record_path() -> Path:
+    """What a run pushed to a VIC-II Kawari, and the palette it found there
+    (``<data root>/kawari-palette.json``). A Kawari keeps its palette through
+    a C64 reset, so a run that dies leaves its colors on the machine, and the
+    next run would otherwise take them for the machine's own."""
+    return data_root() / "kawari-palette.json"
+
+
 def web_token_path() -> Path:
     """The web console's generated shared token (``<data root>/web_token``).
 

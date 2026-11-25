@@ -536,6 +536,12 @@ class VideoShotWiringTest(unittest.TestCase):
         self.assertIsNone(self.scene._shot_pusher)
         self.scene.teardown()
 
+    def test_a_machine_whose_writer_cannot_follow_shots_keeps_one_palette(self):
+        self.control.follows_shots = False
+        self.scene.setup()
+        self.assertIsNone(self.scene._shot_pusher)
+        self.scene.teardown()
+
 
 if __name__ == "__main__":
     unittest.main()

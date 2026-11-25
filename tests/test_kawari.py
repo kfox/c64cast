@@ -1,12 +1,21 @@
-"""hw/kawari.py: reading a VIC-II Kawari's live palette, and host_palette =
-"auto" choosing it on a machine that is not an Ultimate."""
+"""hw/kawari.py: finding a VIC-II Kawari and writing its palette, and
+host_palette = "auto" choosing its palette on a machine that is not an
+Ultimate."""
 
 from __future__ import annotations
 
+import json
+import os
+import tempfile
 import unittest
+from pathlib import Path
 from types import SimpleNamespace
+from unittest import mock
 
-from c64cast.app.config import Config
+import numpy as np
+
+from c64cast.app.config import Config, SceneCfg
+from c64cast.hw import hardware_palette as hp
 from c64cast.hw import hw_provision, kawari
 
 # 6-bit channels as the hardware reported them, with a set high bit on white's
@@ -15,10 +24,11 @@ _PALETTE_6BIT = [(0, 0, 0), (0xFF, 63, 63), (43, 10, 10), (24, 54, 51)] + [(8, 1
 
 
 class FakeKawari:
-    """The registers a palette read touches, as the hardware answered them.
+    """The registers c64cast touches on a Kawari, as the hardware answered them.
 
     `stale_unlocks` is how many unlock sequences are ignored before one takes:
-    on hardware the first after a deactivate never did."""
+    on hardware the first after a deactivate never did. A write to overlay
+    offset `drop_offset` is lost, as a TeensyROM+ write the link absorbed is."""
 
     def __init__(
         self,
@@ -27,50 +37,81 @@ class FakeKawari:
         stale_unlocks: int = 0,
         stock: bool = False,
         overlay_reads_answered: int | None = None,
+        active: bool = False,
+        hires_mode: int = 0,
+        cap_lo: int = 0b11001110,
+        drop_offset: int | None = None,
     ):
         self.stock = stock
         self.overlay_reads_answered = overlay_reads_answered
         self.stale_unlocks = stale_unlocks
-        self.active = False
+        self.active = active
         self.flags = 0
         self.port_addr = 0
+        self.hires_mode = hires_mode
+        self.drop_offset = drop_offset
         self.overlay = bytearray(256)
         self.overlay[kawari.OVERLAY_CHIP_MODEL] = model
+        self.overlay[kawari.OVERLAY_VERSION : kawari.OVERLAY_VERSION + 2] = bytes([1, 17])
+        self.overlay[kawari.OVERLAY_CAP_LO] = cap_lo
+        self.overlay[kawari.OVERLAY_VARIANT : kawari.OVERLAY_VARIANT + 6] = b"MAINLG"
         for i, rgb in enumerate(_PALETTE_6BIT):
             self.overlay[
                 kawari.OVERLAY_PALETTE_RGB + 4 * i : kawari.OVERLAY_PALETTE_RGB + 4 * i + 3
             ] = bytes(rgb)
         self._sequence = b""
         self.flag_writes: list[int] = []
+        self.unlock_bytes_while_active = 0
+        self.persist_while_active = False
+        self.written: set[int] = set()
 
     def write_memory(self, address: str, data_hex: str) -> None:
-        addr, data = int(address, 16), bytes.fromhex(data_hex)
         if self.stock:
             return
+        for i, value in enumerate(bytes.fromhex(data_hex)):
+            self._write(int(address, 16) + i, value)
+
+    def _write(self, addr: int, value: int) -> None:
+        self.written.add(addr)
         if addr == kawari.VIDEO_MEM_FLAGS:
-            value = data[0]
             self.flag_writes.append(value)
             if self.active:
+                if value in kawari.UNLOCK:
+                    self.unlock_bytes_while_active += 1
                 if value & kawari.FLAGS_DEACTIVATE:
                     self.active = False
                 else:
+                    self.persist_while_active |= bool(value & kawari.FLAGS_PERSIST)
                     self.flags = value
                 return
-            self._sequence = (self._sequence + data)[-4:]
+            self._sequence = (self._sequence + bytes([value]))[-4:]
             if self._sequence == kawari.UNLOCK:
                 self._sequence = b""
                 if self.stale_unlocks:
                     self.stale_unlocks -= 1
                 else:
                     self.active, self.flags = True, 0
-        elif addr == kawari.VIDEO_MEM_1_ADDR and self.active:
-            self.port_addr = data[0] | (data[1] << 8)
+        elif not self.active:
+            return
+        elif addr == kawari.VIDEO_MEM_1_ADDR:
+            self.port_addr = (self.port_addr & 0xFF00) | value
+        elif addr == kawari.VIDEO_MEM_1_ADDR + 1:
+            self.port_addr = (self.port_addr & 0x00FF) | (value << 8)
+        elif addr == kawari.VIDEO_MEM_1_VAL and self.flags & kawari.FLAGS_OVERLAY:
+            if self.port_addr == self.drop_offset:
+                self.drop_offset = None
+            else:
+                self.overlay[self.port_addr & 0xFF] = value
+        elif addr == kawari.HIRES_MODE:
+            self.hires_mode = value
 
     def read_memory(self, address: int, length: int, timeout: float = 1.0) -> bytes | None:
         if self.stock or not self.active:
             return b"\xff" * length
         if address == kawari.VIDEO_MEM_FLAGS:
             return bytes([self.flags])
+        if address == kawari.HIRES_MODE:
+            return bytes([self.hires_mode])
         if address == kawari.VIDEO_MEM_1_VAL and self.flags & kawari.FLAGS_OVERLAY:
             if self.overlay_reads_answered is not None:
                 if self.overlay_reads_answered == 0:
@@ -82,39 +123,66 @@ class FakeKawari:
     def flush(self) -> None:
         pass
 
+    def palette_6bit(self) -> list[int]:
+        return [self.overlay[o] & kawari.CHANNEL_MAX for o in kawari._PALETTE_OFFSETS]
 
-class ReadPaletteTest(unittest.TestCase):
-    def test_reads_the_model_and_scales_six_bit_channels(self):
-        model, rgb = kawari.read_palette(FakeKawari())  # type: ignore[misc]
-        self.assertEqual(model, "6567R8")
-        self.assertEqual(len(rgb), 16)
-        self.assertEqual(rgb[1], (255, 255, 255))
-        self.assertEqual(rgb[2], (174, 40, 40))
+
+class ProbeTest(unittest.TestCase):
+    def test_reads_what_the_kawari_says_about_itself(self):
+        found = kawari.probe(FakeKawari())  # type: ignore[arg-type]
+        assert found is not None
+        info = found.info
+        self.assertEqual(info.model, "6567R8")
+        self.assertEqual(info.version, (1, 17))
+        self.assertEqual(info.variant, "MAINLG")
+        self.assertTrue(info.configurable_rgb)
+        self.assertEqual(len(info.palette_rgb), 16)
+        self.assertEqual(info.palette_rgb[1], (255, 255, 255))
+        self.assertEqual(info.palette_rgb[2], (174, 40, 40))
+
+    def test_without_the_capability_the_palette_is_not_configurable(self):
+        found = kawari.probe(FakeKawari(cap_lo=0b11000110))
+        assert found is not None
+        self.assertFalse(found.info.configurable_rgb)
 
     def test_a_second_unlock_after_a_stale_one_still_reads(self):
-        answer = kawari.read_palette(FakeKawari(stale_unlocks=1))
-        self.assertIsNotNone(answer)
+        self.assertIsNotNone(kawari.probe(FakeKawari(stale_unlocks=1)))
+
+    def test_an_already_active_kawari_is_not_sent_the_unlock(self):
+        bus = FakeKawari(active=True)
+        self.assertIsNotNone(kawari.probe(bus))
+        self.assertEqual(bus.unlock_bytes_while_active, 0)
+        self.assertFalse(bus.persist_while_active)
 
     def test_leaves_the_extra_registers_locked(self):
         bus = FakeKawari()
-        kawari.read_palette(bus)
+        kawari.probe(bus)
         self.assertFalse(bus.active)
         self.assertEqual(bus.flag_writes[-1], kawari.FLAGS_DEACTIVATE)
 
+    def test_a_hires_mode_left_on_is_turned_off(self):
+        bus = FakeKawari(hires_mode=0x90)
+        with self.assertLogs("c64cast.hw.kawari", level="INFO"):
+            kawari.probe(bus)
+        self.assertEqual(bus.hires_mode, 0)
+
     def test_a_stock_vic_is_not_a_kawari(self):
-        self.assertIsNone(kawari.read_palette(FakeKawari(stock=True)))
+        bus = FakeKawari(stock=True)
+        self.assertIsNone(kawari.probe(bus))
 
     def test_an_unknown_chip_model_is_not_read(self):
-        self.assertIsNone(kawari.read_palette(FakeKawari(model=len(kawari.CHIP_MODELS))))
+        bus = FakeKawari(model=len(kawari.CHIP_MODELS), hires_mode=0x90)
+        self.assertIsNone(kawari.probe(bus))
+        self.assertEqual(bus.hires_mode, 0x90)
 
     def test_an_unanswered_chip_model_read_is_no_answer_and_relocks(self):
         bus = FakeKawari(overlay_reads_answered=0)
-        self.assertIsNone(kawari.read_palette(bus))
+        self.assertIsNone(kawari.probe(bus))
         self.assertFalse(bus.active)
 
     def test_an_unanswered_palette_byte_is_no_answer_and_relocks(self):
         bus = FakeKawari(overlay_reads_answered=20)
-        self.assertIsNone(kawari.read_palette(bus))
+        self.assertIsNone(kawari.probe(bus))
         self.assertFalse(bus.active)
 
     def test_a_backend_that_cannot_read_is_no_answer(self):
@@ -123,11 +191,52 @@ class ReadPaletteTest(unittest.TestCase):
             read_memory=lambda *a, **k: None,
             flush=lambda: None,
         )
-        self.assertIsNone(kawari.read_palette(bus))  # type: ignore[arg-type]
+        self.assertIsNone(kawari.probe(bus))  # type: ignore[arg-type]
+
+
+class WritePaletteTest(unittest.TestCase):
+    def setUp(self):
+        self.bus = FakeKawari()
+        found = kawari.probe(self.bus)
+        assert found is not None
+        self.chip = found
+        self.table = [(7 * i) % 64 for i in range(kawari.PALETTE_CHANNELS)]
+
+    def test_writes_every_channel_and_reads_it_back(self):
+        self.assertEqual(self.chip.write_palette(self.table), tuple(self.table))
+        self.assertEqual(self.bus.palette_6bit(), self.table)
+
+    def test_never_persists_and_locks_again(self):
+        self.chip.write_palette(self.table)
+        self.assertFalse(self.bus.persist_while_active)
+        self.assertFalse(self.bus.active)
+
+    def test_touches_no_register_past_port_a(self):
+        self.bus.written.clear()
+        self.chip.write_palette(self.table)
+        self.assertLessEqual(
+            self.bus.written,
+            {
+                kawari.VIDEO_MEM_FLAGS,
+                kawari.VIDEO_MEM_1_ADDR,
+                kawari.VIDEO_MEM_1_ADDR + 1,
+                kawari.VIDEO_MEM_1_VAL,
+            },
+        )
+
+    def test_a_dropped_write_shows_in_the_read_back(self):
+        self.bus.drop_offset = kawari.OVERLAY_PALETTE_RGB + 1
+        back = self.chip.write_palette(self.table)
+        self.assertNotEqual(back, tuple(self.table))
+
+    def test_a_kawari_that_will_not_activate_is_no_answer(self):
+        self.bus.stock = True
+        self.assertIsNone(self.chip.write_palette(self.table))
 
 
 class _KawariApi(FakeKawari):
     profile = SimpleNamespace(supports_read=True, supports_system_mode=False)
+    kawari: kawari.Kawari | None = None
 
 
 class AutoPaletteTest(unittest.TestCase):
@@ -138,12 +247,24 @@ class AutoPaletteTest(unittest.TestCase):
         self.addCleanup(lambda: pal.set_host_palette(before[0], name=before[1]))
         hw_provision.forget_resolved_palette()
         self.addCleanup(hw_provision.forget_resolved_palette)
+        env = mock.patch.dict(os.environ, {"C64CAST_DATA_DIR": tempfile.mkdtemp()})
+        env.start()
+        self.addCleanup(env.stop)
         self.pal = pal
 
     def test_auto_takes_a_kawaris_live_palette_as_bgr(self):
         hw_provision.resolve_palette(Config(), _KawariApi())
         self.assertTrue(self.pal.active_host_palette_name().startswith("kawari-live:"))
         self.assertEqual(tuple(self.pal.C64_PALETTE_BGR[2]), (40.0, 40.0, 174.0))
+
+    def test_a_configured_palette_still_finds_the_kawari(self):
+        cfg = Config()
+        cfg.hardware.host_palette = "pepto"
+        api = _KawariApi()
+        with self.assertLogs("c64cast.hw.hw_provision", level="INFO"):
+            hw_provision.resolve_palette(cfg, api)
+        self.assertIsInstance(api.kawari, kawari.Kawari)
+        self.assertEqual(self.pal.active_host_palette_name(), "pepto")
 
     def test_auto_assumes_pepto_for_a_stock_vic(self):
         hw_provision.resolve_palette(Config(), _KawariApi(stock=True))
@@ -163,6 +284,167 @@ class AutoPaletteTest(unittest.TestCase):
         hw_provision.resolve_palette(cfg, api)
         self.assertEqual(self.pal.active_host_palette_name(), "pepto")
         self.assertEqual(api.flag_writes, [])
+
+
+def _bgr(rgb6: list[tuple[int, int, int]]) -> np.ndarray:
+    return np.asarray(
+        [[kawari.to_8bit(b), kawari.to_8bit(g), kawari.to_8bit(r)] for r, g, b in rgb6],
+        dtype=np.uint8,
+    )
+
+
+class KawariWriterTest(unittest.TestCase):
+    def setUp(self):
+        self.bus = FakeKawari()
+        found = kawari.probe(self.bus)
+        assert found is not None
+        self.chip = found
+        self.record = Path(tempfile.mkdtemp()) / "kawari-palette.json"
+        self.machine = _bgr(_PALETTE_6BIT)
+        self.scene = self.machine.copy()
+        self.scene[8] = (kawari.to_8bit(10), kawari.to_8bit(30), kawari.to_8bit(60))
+
+    def _writer(self) -> hp.KawariPaletteWriter:
+        return hp.KawariPaletteWriter(self.chip, self.record)
+
+    def test_the_machine_palette_is_the_one_found_at_startup(self):
+        machine = self._writer().read_machine()
+        assert machine is not None
+        np.testing.assert_array_equal(machine, self.machine)
+
+    def test_a_push_lands_in_six_bits_and_reads_back(self):
+        self.assertTrue(self._writer().push(self.scene))
+        self.assertEqual(self.bus.palette_6bit()[24:27], [60, 30, 10])
+
+    def test_a_write_the_link_dropped_fails_the_push(self):
+        self.bus.drop_offset = kawari.OVERLAY_PALETTE_RGB + 4 * 8
+        self.assertFalse(self._writer().push(self.scene))
+
+    def test_a_pushed_table_is_recorded_and_putting_the_machines_back_clears_it(self):
+        writer = self._writer()
+        writer.push(self.scene)
+        saved = json.loads(self.record.read_text())
+        np.testing.assert_array_equal(saved["shows"], self.scene)
+        np.testing.assert_array_equal(saved["machine"], self.machine)
+        writer.push(self.machine)
+        self.assertFalse(self.record.exists())
+
+    def test_a_run_that_died_has_its_palette_put_back(self):
+        self._writer().push(self.scene)
+        found = kawari.probe(self.bus)
+        assert found is not None
+        with self.assertLogs("c64cast.hw.hardware_palette", level="WARNING"):
+            machine = hp.put_back_a_dead_runs_kawari_palette(found, self.record)
+        assert machine is not None
+        np.testing.assert_array_equal(machine, self.machine)
+        self.assertEqual(self.bus.palette_6bit(), [c & 63 for rgb in _PALETTE_6BIT for c in rgb])
+        self.assertFalse(self.record.exists())
+
+    def test_a_record_still_matching_the_machine_is_not_taken_as_its_palette(self):
+        self._writer().push(self.scene)
+        found = kawari.probe(self.bus)
+        assert found is not None
+        self.assertIsNone(hp.KawariPaletteWriter(found, self.record).read_machine())
+        self.assertTrue(self.record.exists())
+
+    def test_an_unreadable_record_is_ignored(self):
+        self.record.write_text("{")
+        self.assertIsNone(hp.put_back_a_dead_runs_kawari_palette(self.chip, self.record))
+
+    def test_a_record_the_machine_no_longer_matches_is_dropped(self):
+        self.record.write_text(
+            json.dumps({"machine": self.scene.tolist(), "shows": self.scene.tolist()})
+        )
+        machine = self._writer().read_machine()
+        assert machine is not None
+        np.testing.assert_array_equal(machine, self.machine)
+        self.assertFalse(self.record.exists())
+
+
+class _KawariBackend(_KawariApi):
+    hardware_palette = None
+
+
+class KawariProvisionTest(unittest.TestCase):
+    def setUp(self):
+        hw_provision.forget_resolved_palette()
+        self.addCleanup(hw_provision.forget_resolved_palette)
+        env = mock.patch.dict(os.environ, {"C64CAST_DATA_DIR": tempfile.mkdtemp()})
+        env.start()
+        self.addCleanup(env.stop)
+
+    def _provision(self, api) -> hp.HardwarePalette | None:
+        cfg = Config()
+        cfg.color.hardware_palette = "source"
+        cfg.scenes = [SceneCfg(type="video")]
+        api.kawari = kawari.probe(api)
+        with self.assertLogs("c64cast.hw.hardware_palette", level="INFO"):
+            return hp.provision_hardware_palette(api, cfg, is_ensemble=False)
+
+    def test_a_kawari_with_a_configurable_palette_gets_its_writer(self):
+        api = _KawariBackend()
+        control = self._provision(api)
+        assert control is not None
+        self.assertEqual(control.channel_bits, 6)
+        self.assertFalse(control.follows_shots)
+        self.assertIs(api.hardware_palette, control)
+
+    def test_a_kawari_without_one_is_skipped(self):
+        self.assertIsNone(self._provision(_KawariBackend(cap_lo=0b11000110)))
+
+
+class DeadRunTest(unittest.TestCase):
+    """A run that died left its scene's colors on the Kawari."""
+
+    def setUp(self):
+        from c64cast.app.paths import kawari_palette_record_path
+        from c64cast.video import palette as pal
+
+        before = pal.C64_PALETTE_BGR.copy(), pal.active_host_palette_name()
+        self.addCleanup(lambda: pal.set_host_palette(before[0], name=before[1]))
+        hw_provision.forget_resolved_palette()
+        self.addCleanup(hw_provision.forget_resolved_palette)
+        env = mock.patch.dict(os.environ, {"C64CAST_DATA_DIR": tempfile.mkdtemp()})
+        env.start()
+        self.addCleanup(env.stop)
+        self.pal = pal
+        self.api = _KawariBackend()
+        self.machine = _bgr(_PALETTE_6BIT)
+        scene = self.machine.copy()
+        scene[8] = (kawari.to_8bit(10), kawari.to_8bit(30), kawari.to_8bit(60))
+        found = kawari.probe(self.api)
+        assert found is not None
+        hp.KawariPaletteWriter(found, kawari_palette_record_path()).push(scene)
+        self.record = kawari_palette_record_path()
+
+    def _machine_6bit(self) -> list[int]:
+        return [c & 63 for rgb in _PALETTE_6BIT for c in rgb]
+
+    def test_auto_aims_at_the_palette_the_dead_run_found(self):
+        with self.assertLogs("c64cast.hw.hardware_palette", level="WARNING"):
+            hw_provision.resolve_palette(Config(), self.api)
+        np.testing.assert_array_equal(self.pal.C64_PALETTE_BGR, self.machine)
+        self.assertEqual(self.api.palette_6bit(), self._machine_6bit())
+        self.assertFalse(self.record.exists())
+
+    def test_a_run_that_pushes_nothing_still_puts_it_back(self):
+        cfg = Config()
+        cfg.hardware.host_palette = "pepto"
+        with self.assertLogs("c64cast.hw.hardware_palette", level="WARNING"):
+            hw_provision.resolve_palette(cfg, self.api)
+        self.assertEqual(self.api.palette_6bit(), self._machine_6bit())
+
+    def test_a_put_back_that_fails_keeps_the_record_and_pushes_nothing(self):
+        self.api.drop_offset = kawari.OVERLAY_PALETTE_RGB + 4 * 8
+        with self.assertLogs("c64cast.hw.hardware_palette", level="WARNING"):
+            hw_provision.resolve_palette(Config(), self.api)
+        self.assertTrue(self.record.exists())
+        cfg = Config()
+        cfg.color.hardware_palette = "source"
+        cfg.scenes = [SceneCfg(type="video")]
+        with self.assertLogs("c64cast.hw.hardware_palette", level="WARNING"):
+            self.assertIsNone(hp.provision_hardware_palette(self.api, cfg, is_ensemble=False))
+        self.assertTrue(self.record.exists())
 
 
 if __name__ == "__main__":

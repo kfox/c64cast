@@ -1628,7 +1628,7 @@ def derive_hardware_palette(
 
 def _round_to_channel_bits(table_bgr: np.ndarray, bits: int) -> np.ndarray:
     """Each 8-bit channel moved to the nearest value a `bits`-bit channel
-    shows, scaled back to 8 bits the way `kawari.read_palette` scales one."""
+    shows, scaled back to 8 bits the way `kawari.to_8bit` scales one."""
     top = (1 << bits) - 1
     levels = np.rint(table_bgr.astype(np.float32) * top / 255)
     return np.rint(levels * 255 / top).astype(np.uint8)
