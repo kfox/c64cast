@@ -157,8 +157,10 @@ class KawariPaletteWriter:
     ack_delay_s = 0.0
     unreadable = "the Kawari did not take back the palette a run that ended early found"
 
-    def __init__(self, chip: kawari.Kawari, record: Path) -> None:
-        self.follows_shots = chip.info.version >= kawari.OVERLAY_COPY_FIRMWARE
+    def __init__(self, chip: kawari.Kawari, record: Path, *, reads_track_the_beam: bool) -> None:
+        self.follows_shots = (
+            reads_track_the_beam and chip.info.version >= kawari.OVERLAY_COPY_FIRMWARE
+        )
         self._chip = chip
         self._record = record
         self._machine = _kawari_bgr(chip)
@@ -790,7 +792,11 @@ def _writer_for(api: object) -> PaletteWriter | None:
         return UltimatePaletteWriter(api)
     chip = getattr(api, "kawari", None)
     if isinstance(chip, kawari.Kawari) and chip.info.configurable_rgb:
-        return KawariPaletteWriter(chip, kawari_palette_record_path())
+        # `go` times its copy off a raster read. A TeensyROM+ read lands within
+        # a few lines; an Ultimate's REST read takes about two frames, so it
+        # is stale by the time the copy fires, and a third of the copies tore (measured).
+        tr_link = getattr(getattr(api, "profile", None), "family", None) == "tr"
+        return KawariPaletteWriter(chip, kawari_palette_record_path(), reads_track_the_beam=tr_link)
     return None
 
 

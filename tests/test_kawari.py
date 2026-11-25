@@ -285,7 +285,7 @@ class WritePaletteTest(unittest.TestCase):
 
 
 class _KawariApi(FakeKawari):
-    profile = SimpleNamespace(supports_read=True, supports_system_mode=False)
+    profile = SimpleNamespace(supports_read=True, supports_system_mode=False, family="tr")
     kawari: kawari.Kawari | None = None
 
 
@@ -355,7 +355,7 @@ class KawariWriterTest(unittest.TestCase):
         self.scene[8] = (kawari.to_8bit(10), kawari.to_8bit(30), kawari.to_8bit(60))
 
     def _writer(self) -> hp.KawariPaletteWriter:
-        return hp.KawariPaletteWriter(self.chip, self.record)
+        return hp.KawariPaletteWriter(self.chip, self.record, reads_track_the_beam=True)
 
     def test_the_machine_palette_is_the_one_found_at_startup(self):
         machine = self._writer().read_machine()
@@ -394,7 +394,9 @@ class KawariWriterTest(unittest.TestCase):
         self._writer().push(self.scene)
         found = kawari.probe(self.bus)
         assert found is not None
-        self.assertIsNone(hp.KawariPaletteWriter(found, self.record).read_machine())
+        self.assertIsNone(
+            hp.KawariPaletteWriter(found, self.record, reads_track_the_beam=True).read_machine()
+        )
         self.assertTrue(self.record.exists())
 
     def test_an_unreadable_record_is_ignored(self):
@@ -424,7 +426,7 @@ class ShotPushTest(unittest.TestCase):
         self.shot = self.machine.copy()
         self.shot[5] = (kawari.to_8bit(1), kawari.to_8bit(2), kawari.to_8bit(3))
         self.shot[9] = (kawari.to_8bit(40), kawari.to_8bit(50), kawari.to_8bit(60))
-        self.writer = hp.KawariPaletteWriter(self.chip, self.record)
+        self.writer = hp.KawariPaletteWriter(self.chip, self.record, reads_track_the_beam=True)
 
     def _record_shows(self) -> list[np.ndarray]:
         return [np.asarray(t) for t in json.loads(self.record.read_text())["shows"]]
@@ -555,6 +557,15 @@ class KawariProvisionTest(unittest.TestCase):
         assert control is not None
         self.assertTrue(control.follows_shots)
 
+    def test_a_kawari_behind_an_ultimate_keeps_one_palette_per_video(self):
+        api = _KawariBackend()
+        api.profile = SimpleNamespace(
+            supports_read=True, supports_system_mode=False, family="ultimate"
+        )
+        control = self._provision(api)
+        assert control is not None
+        self.assertFalse(control.follows_shots)
+
 
 class DeadRunTest(unittest.TestCase):
     """A run that died left its scene's colors on the Kawari."""
@@ -577,7 +588,9 @@ class DeadRunTest(unittest.TestCase):
         scene[8] = (kawari.to_8bit(10), kawari.to_8bit(30), kawari.to_8bit(60))
         found = kawari.probe(self.api)
         assert found is not None
-        hp.KawariPaletteWriter(found, kawari_palette_record_path()).push(scene)
+        hp.KawariPaletteWriter(found, kawari_palette_record_path(), reads_track_the_beam=True).push(
+            scene
+        )
         self.record = kawari_palette_record_path()
 
     def _machine_6bit(self) -> list[int]:
