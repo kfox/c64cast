@@ -135,7 +135,9 @@ with its own failing-first test, a guard ships only with an input that reaches
 it, and an unreached suspicion is declined, not proposed as a follow-up.
 
 Come back unfixed, as a report only: anything editorial across the whole change.
-Commit messages are not reviewed in this repository, so do not report on them.
+Commit messages are not reviewed in this repository: never propose a rewrite.
+A message that misstates what the code does gets at most one line in the
+report, which nobody acts on.
 If the prompt that invoked you says report-only, leave the tree untouched.
 
 ## c64cast specifics

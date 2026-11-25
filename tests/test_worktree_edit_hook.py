@@ -1,10 +1,9 @@
 """Tests for `.claude/hooks/require-edits-in-a-worktree.py` — the PreToolUse
-hook that asks before an edit lands in the repository's primary checkout.
+hook that refuses an edit landing in the repository's primary checkout.
 
-The decision is `ask`, so both failure directions cost the user a prompt rather
-than a lost edit. The cases that matter are the ones where the hook has to work
-out which tree a path belongs to: a session inside a worktree reaching back
-into the shared tree, and a path outside the repository entirely.
+The cases that matter are the ones where the hook has to work out which tree a
+path belongs to: a session inside a worktree reaching back into the shared
+tree, and a path outside the repository entirely.
 
 The hook is loaded by path: `.claude/hooks/` is not a package, and the filename
 is not an identifier.
@@ -95,28 +94,28 @@ class AllowedPathTest(unittest.TestCase):
 
 
 class RefusedPathTest(unittest.TestCase):
-    def assertAsked(self, path: Path | str, cwd: Path, project_dir: Path) -> str:
+    def assertRefused(self, path: Path | str, cwd: Path, project_dir: Path) -> str:
         reason = hook.verdict(str(path), str(cwd), str(project_dir))
         self.assertIsNotNone(reason, str(path))
         assert reason is not None
         return reason
 
-    def test_a_path_in_the_primary_checkout_is_asked_about(self):
-        self.assertAsked(_MAIN / "c64cast" / "app" / "cli.py", _MAIN, _MAIN)
+    def test_a_path_in_the_primary_checkout_is_refused(self):
+        self.assertRefused(_MAIN / "c64cast" / "app" / "cli.py", _MAIN, _MAIN)
 
     def test_a_relative_path_resolves_against_the_working_directory(self):
-        self.assertAsked("c64cast/app/cli.py", _MAIN, _MAIN)
+        self.assertRefused("c64cast/app/cli.py", _MAIN, _MAIN)
 
-    def test_a_worktree_session_reaching_back_into_the_shared_tree_is_asked_about(self):
+    def test_a_worktree_session_reaching_back_into_the_shared_tree_is_refused(self):
         # The case this exists for: the session is isolated, the edit is not.
-        self.assertAsked(_MAIN / "Makefile", _WORKTREE, _WORKTREE)
+        self.assertRefused(_MAIN / "Makefile", _WORKTREE, _WORKTREE)
 
-    def test_the_shared_trees_own_claude_directory_is_asked_about(self):
-        self.assertAsked(_MAIN / ".claude" / "settings.json", _WORKTREE, _WORKTREE)
+    def test_the_shared_trees_own_claude_directory_is_refused(self):
+        self.assertRefused(_MAIN / ".claude" / "settings.json", _WORKTREE, _WORKTREE)
 
-    def test_a_path_that_only_starts_to_look_like_a_worktree_is_asked_about(self):
-        self.assertAsked(_MAIN / ".claude" / "hooks" / "x.py", _MAIN, _MAIN)
-        self.assertAsked(_MAIN / "docs" / ".claude" / "worktrees" / "x.py", _MAIN, _MAIN)
+    def test_a_path_that_only_starts_to_look_like_a_worktree_is_refused(self):
+        self.assertRefused(_MAIN / ".claude" / "hooks" / "x.py", _MAIN, _MAIN)
+        self.assertRefused(_MAIN / "docs" / ".claude" / "worktrees" / "x.py", _MAIN, _MAIN)
 
     def test_a_worktree_recording_a_relative_gitdir_still_sees_the_shared_tree(self):
         # The path git records is not always absolute, and a hook that reads it
@@ -126,10 +125,10 @@ class RefusedPathTest(unittest.TestCase):
             _MAIN / ".claude" / "worktrees" / "relative-verdict",
             Path("..") / ".." / ".." / ".git" / "worktrees" / "relative-verdict",
         )
-        self.assertAsked(_MAIN / "Makefile", relative, relative)
+        self.assertRefused(_MAIN / "Makefile", relative, relative)
 
     def test_the_reason_names_the_path_and_how_to_get_a_worktree(self):
-        reason = self.assertAsked(_MAIN / "Makefile", _MAIN, _MAIN)
+        reason = self.assertRefused(_MAIN / "Makefile", _MAIN, _MAIN)
         self.assertIn(str(_MAIN / "Makefile"), reason)
         self.assertIn("EnterWorktree", reason)
         # make takes the override as an argument; git needs it as a prefix.
@@ -139,21 +138,21 @@ class RefusedPathTest(unittest.TestCase):
     def test_the_reason_given_inside_a_worktree_does_not_offer_enterworktree(self):
         # EnterWorktree refuses a `name` from a session already in a worktree,
         # so offering it there costs a tool call and answers nothing.
-        reason = self.assertAsked(_MAIN / "Makefile", _WORKTREE, _WORKTREE)
+        reason = self.assertRefused(_MAIN / "Makefile", _WORKTREE, _WORKTREE)
         self.assertNotIn("EnterWorktree", reason)
         self.assertIn(str(_WORKTREE), reason)
 
     def test_a_worktree_outside_the_checkout_is_told_where_it_is(self):
         # EnterWorktree refuses a `name` from a session in any linked worktree,
         # so its location does not change what the message can offer.
-        reason = self.assertAsked(_MAIN / "Makefile", _STRAY, _STRAY)
+        reason = self.assertRefused(_MAIN / "Makefile", _STRAY, _STRAY)
         self.assertNotIn("EnterWorktree", reason)
         self.assertIn(str(_STRAY), reason)
 
     def test_a_working_directory_in_a_worktree_settles_the_reason(self):
         # The two can disagree: a session started in the shared tree and then
         # moved into a worktree, where EnterWorktree is refused all the same.
-        reason = self.assertAsked(_MAIN / "Makefile", _WORKTREE, _MAIN)
+        reason = self.assertRefused(_MAIN / "Makefile", _WORKTREE, _MAIN)
         self.assertNotIn("EnterWorktree", reason)
         self.assertIn(str(_WORKTREE), reason)
 
@@ -211,13 +210,13 @@ class HookProtocolTest(unittest.TestCase):
     def _payload(self, tool_input: dict[str, str], cwd: Path = _MAIN) -> str:
         return json.dumps({"tool_name": "Edit", "tool_input": tool_input, "cwd": str(cwd)})
 
-    def test_a_shared_tree_edit_prints_an_ask_decision(self):
+    def test_a_shared_tree_edit_prints_a_deny_decision(self):
         target = _MAIN / "Makefile"
         code, printed = self._main(self._payload({"file_path": str(target)}))
         self.assertEqual(code, 0)
         decision = json.loads(printed)["hookSpecificOutput"]
         self.assertEqual(decision["hookEventName"], "PreToolUse")
-        self.assertEqual(decision["permissionDecision"], "ask")
+        self.assertEqual(decision["permissionDecision"], "deny")
         self.assertIn(str(target), decision["permissionDecisionReason"])
 
     def test_a_notebook_is_read_from_its_own_key(self):
