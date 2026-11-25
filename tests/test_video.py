@@ -37,6 +37,7 @@ from c64cast.scenes.scenes import VideoScene
 from c64cast.scenes.video_transport import VideoTransportControls, _Anchor
 from c64cast.video import video as video_mod
 from c64cast.video.palette import ColorFit, ColorFitAccumulator
+from c64cast.video.palette_shots import PaletteShotTracker
 from c64cast.video.shots import ShotFit, ShotTracker
 from c64cast.video.video import (
     AUDIO_DISCONTINUITY_S,
@@ -725,6 +726,7 @@ def _make_demux_source_stub(
     src._audio_fed_s = None
     src._audio_trim = 0
     src._video_read_s = None
+    src._shown_pts = None
     src._audio_lag_s = 0.0
     src._audio_shift_s = 0.0
     src._audio_jump_warned = False
@@ -1839,6 +1841,12 @@ class AlignedAudioTest(unittest.TestCase):
         src.shot_tracker = mock.Mock()
         self.assertTrue(src._apply_pending_seek())
         src.shot_tracker.restart.assert_called_once_with(None)
+
+    def test_a_seek_forgets_where_the_picture_was(self):
+        src = _make_demux_source_stub([], pending_seek=3.0)
+        src._shown_pts = 40.0
+        src._apply_pending_seek()
+        self.assertIsNone(src._shown_pts)
 
     def test_sound_from_before_a_seeks_target_is_trimmed_not_followed_on_from(self):
         # A seek lands on the keyframe before its target, and the sound read
@@ -3285,6 +3293,23 @@ class DemuxDecodeDownscaleTest(unittest.TestCase):
         _demux_until_parked(src)
         observed = src.shot_tracker.observe.call_args.args[1]
         self.assertIs(observed, src._video_buf[0][1])
+
+    def test_the_palette_tracker_sees_where_the_picture_is(self):
+        src = _make_demux_source_stub(
+            [_FakePacket([_FakeFrame(0, width=320, height=200)])],
+            decode_target=DecodeTarget(320, 200, 4 / 3, "fit"),
+        )
+        src.shot_tracker = mock.MagicMock(spec=PaletteShotTracker)
+        src.shot_tracker.observe.return_value = None
+        src._shown_pts = 1.25
+        _demux_until_parked(src)
+        self.assertEqual(src.shot_tracker.observe.call_args.args[2], 1.25)
+
+    def test_choosing_a_frame_records_where_the_picture_is(self):
+        img = np.zeros((4, 4, 3), dtype=np.uint8)
+        src = _make_av_source_stub([(0.0, img), (1.0, img)], eof=False)
+        src.current_frame(audio_position_s=0.75)
+        self.assertEqual(src._shown_pts, 0.75)
 
     def test_a_padding_mode_plans_for_the_padded_screen(self):
         # Letterboxed onto a 4:3 screen, a 16:9 picture fills the width only,

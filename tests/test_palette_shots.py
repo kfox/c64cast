@@ -112,13 +112,22 @@ class _Recorder:
 
 
 def _track(
-    frames, min_stretch_s: float = 1.3
+    frames,
+    min_stretch_s: float = 1.3,
+    *,
+    lead_s: float | None = None,
+    ready_ahead_s: float = 0.5,
 ) -> tuple[list[float], _Recorder, ps.PaletteShotTracker]:
+    """`lead_s` is how far the decode runs ahead of the picture; None is a
+    picture that has not started."""
     rec = _Recorder()
-    tracker = ps.PaletteShotTracker(lambda f: f, rec, min_stretch_s=min_stretch_s)
+    tracker = ps.PaletteShotTracker(
+        lambda f: f, rec, min_stretch_s=min_stretch_s, ready_ahead_s=ready_ahead_s
+    )
     starts = []
     for i, f in enumerate(frames):
-        found = tracker.observe(i / FPS, f)
+        pts = i / FPS
+        found = tracker.observe(pts, f, None if lead_s is None else pts - lead_s)
         if found is not None:
             starts.append(found[0])
     return starts, rec, tracker
@@ -141,6 +150,27 @@ class PaletteShotTrackerTest(unittest.TestCase):
     def test_a_stretch_is_fitted_to_its_first_two_seconds(self):
         _, rec, _ = _track(_frames((RED, 3), (BLUE, 3)))
         self.assertEqual(len(rec.ready[0].frames), int(ps.FIT_S * FPS))
+
+    def test_a_stretch_due_on_screen_soon_is_handed_over_with_the_frames_it_has(self):
+        _, rec, _ = _track(_frames((RED, 3), (BLUE, 3)), lead_s=1.0, ready_ahead_s=0.4)
+        blue = rec.ready[1]
+        self.assertEqual(blue.pts, 3.0)
+        # Handed over at the frame decoded when the picture reached 2.6 s.
+        self.assertEqual(len(blue.frames), int(0.6 * FPS) + 1)
+
+    def test_a_stretch_already_due_is_handed_over_on_its_next_frame(self):
+        _, rec, _ = _track(_frames((RED, 3), (BLUE, 3)), lead_s=0.2, ready_ahead_s=0.4)
+        window = ps.AdaptiveCutDetector(ratio=ps.SHOT_CUT_RATIO).window
+        self.assertEqual(len(rec.ready[1].frames), window + 2)
+
+    def test_before_the_picture_starts_a_stretch_takes_its_full_fit(self):
+        _, rec, _ = _track(_frames((RED, 3), (BLUE, 3)), ready_ahead_s=10.0)
+        self.assertEqual(len(rec.ready[0].frames), int(ps.FIT_S * FPS))
+
+    def test_ready_ahead_s_covers_the_load_and_the_fit(self):
+        self.assertAlmostEqual(
+            ps.ready_ahead_s(hp.UltimatePaletteWriter.load_time_s), 1.2 + ps.FIT_ALLOWANCE_S
+        )
 
     def test_a_shot_shorter_than_a_load_keeps_the_colors_before(self):
         starts, _, _ = _track(_frames((RED, 3), (BLUE, 1), (RED, 3)))
@@ -550,6 +580,18 @@ class VideoShotWiringTest(unittest.TestCase):
             if found is not None:
                 starts.append(found[0])
         self.assertEqual(starts, [0.0, 3.0])
+
+    def test_a_stretch_is_handed_over_in_time_for_the_ultimates_load(self):
+        with self.assertLogs("c64cast.scenes.scenes", level="INFO"):
+            self.scene.setup()
+        self.addCleanup(self.scene.teardown)
+        source = self.scene.source
+        assert source is not None
+        tracker = source.shot_tracker
+        assert isinstance(tracker, ps.PaletteShotTracker)
+        self.assertEqual(
+            tracker._ready_ahead_s, ps.ready_ahead_s(hp.UltimatePaletteWriter.load_time_s)
+        )
 
     def test_shots_are_fitted_to_the_whole_picture_the_demux_thread_kept(self):
         # The demux thread hands the tracker what aspect_mode keeps; "fit"

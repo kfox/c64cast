@@ -52,7 +52,12 @@ from c64cast.video.palette import (
     derive_hardware_palette,
     wants_hardware_palette,
 )
-from c64cast.video.palette_shots import PaletteShot, PaletteShotTracker, min_stretch_s
+from c64cast.video.palette_shots import (
+    PaletteShot,
+    PaletteShotTracker,
+    min_stretch_s,
+    ready_ahead_s,
+)
 from c64cast.video.rolling_palette import RollingForcePalette
 from c64cast.video.shots import ShotFit, ShotTracker
 from c64cast.video.video import (
@@ -1806,6 +1811,7 @@ class VideoScene(MediaFileMixin, Scene):
             self.display_mode.quantizer_input,
             pusher.ready,
             min_stretch_s=min_stretch_s(control.load_time_s),
+            ready_ahead_s=ready_ahead_s(control.load_time_s),
         )
         pusher.start()
         self._shot_pusher = pusher
