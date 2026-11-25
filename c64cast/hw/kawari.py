@@ -15,20 +15,25 @@ from __future__ import annotations
 
 import logging
 import threading
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 
+from .c64 import RASTER_VBLANK_LINE, VIC
 from .uci import MemoryBus
 
 log = logging.getLogger(__name__)
 
+DMA_COUNT = 0xD035  # lo then hi, while both ports are set to DMA
 HIRES_MODE = 0xD037
 VIDEO_MEM_1_ADDR = 0xD039  # port A address, lo then hi
 VIDEO_MEM_1_VAL = 0xD03B
+VIDEO_MEM_2_ADDR = 0xD03C  # port B address, lo then hi
 VIDEO_MEM_FLAGS = 0xD03F
 
 UNLOCK = b"VIC2"
 LOCKED = 0xFF
+FLAGS_PORT_A_INC = 0x01
+FLAGS_BOTH_PORTS_DMA = 0x0F
 FLAGS_OVERLAY = 0x20
 # Set, it writes palette and other changes to the EEPROM. Nothing here ever
 # sets it.
@@ -46,12 +51,25 @@ CHIP_MODELS = ("6567R8", "6569R3", "6567R56A", "6569R1")
 PALETTE_COLORS = 16
 PALETTE_CHANNELS = PALETTE_COLORS * 3
 CHANNEL_MAX = 63
+PALETTE_BYTES = PALETTE_COLORS * 4
+
+DMA_COPY_VMEM = 1
+# The first firmware whose VMEM copy can write into the overlay.
+OVERLAY_COPY_FIRMWARE = (1, 16)
+# Where a shot's table waits in video memory for its copy into the overlay:
+# the top of VRAM, clear of $0000-$00FF, which the overlay maps.
+PALETTE_SLOT = 0xFF00
+# Last raster line a copy may be fired on. The write lands about ten NTSC
+# lines after the raster read that allowed it (measured), and the double
+# buffer's flip window ends at RASTER_COMMIT_LAST_SAFE_LINE.
+FIRE_BY_LINE = 20
 
 _PALETTE_OFFSETS = tuple(
     OVERLAY_PALETTE_RGB + 4 * color + channel
     for color in range(PALETTE_COLORS)
     for channel in range(3)
 )
+_SPARE_OFFSETS = tuple(OVERLAY_PALETTE_RGB + 4 * color + 3 for color in range(PALETTE_COLORS))
 
 
 def to_8bit(channel: int) -> int:
@@ -65,13 +83,15 @@ def to_6bit(channel: int) -> int:
 @dataclass(frozen=True)
 class KawariInfo:
     """What a Kawari said about itself when the run started. `palette_rgb` is
-    16 RGB triples scaled to 8 bits a channel."""
+    16 RGB triples scaled to 8 bits a channel; `palette_spare` is the unused
+    fourth byte of each color, which a copy of a whole table rewrites."""
 
     model: str
     version: tuple[int, int]
     variant: str
     cap_lo: int
     palette_rgb: tuple[tuple[int, int, int], ...]
+    palette_spare: tuple[int, ...]
 
     @property
     def configurable_rgb(self) -> bool:
@@ -112,6 +132,83 @@ class Kawari:
         if any(v is None for v in read):
             return None
         return tuple(v & CHANNEL_MAX for v in read if v is not None)
+
+    def stage_palette(self, channels: Sequence[int], stop: Callable[[], bool]) -> bool:
+        """Put 48 6-bit channel values in video memory and set up the copy
+        that `fire_palette` starts. False when the Kawari would not activate
+        or `stop` cut the staging short; `drop_palette` then owes it a
+        deactivate. Left active either way, so `fire_palette` is one write."""
+        table = bytearray(PALETTE_BYTES)
+        table[3::4] = bytes(self.info.palette_spare)
+        for i, value in enumerate(channels):
+            table[4 * (i // 3) + i % 3] = value & CHANNEL_MAX
+        bus = self._bus
+        with self._lock:
+            if not _activate(bus):
+                return False
+            _write_flags(bus, FLAGS_PORT_A_INC)
+            _write_word(bus, VIDEO_MEM_1_ADDR, PALETTE_SLOT)
+            for i, value in enumerate(table):
+                # Writing past $D03B would land on port B, so each byte
+                # goes to the data register on its own.
+                if i % 16 == 0 and stop():
+                    return False
+                bus.write_memory(f"{VIDEO_MEM_1_VAL:04X}", f"{value:02X}")
+            _write_flags(bus, FLAGS_BOTH_PORTS_DMA | FLAGS_OVERLAY)
+            _write_word(bus, VIDEO_MEM_2_ADDR, PALETTE_SLOT)
+            _write_word(bus, DMA_COUNT, PALETTE_BYTES)
+            bus.flush()
+        return True
+
+    def fire_palette(self) -> None:
+        """Copy the staged table into the palette in the raster window where
+        the double-buffer IRQ flips banks, so the colors change with the
+        picture and never partway down it. Waits for the window to open
+        rather than firing in one already open, since the frame just written
+        would then flip a frame after its colors."""
+        bus = self._bus
+        with self._lock:
+            bus.flush()
+            seen_picture = False
+            while True:
+                line = _raster_line(bus)
+                if line is None:
+                    break
+                in_window = line >= RASTER_VBLANK_LINE or line <= FIRE_BY_LINE
+                if in_window and seen_picture:
+                    break
+                seen_picture |= not in_window
+            destination = f"{OVERLAY_PALETTE_RGB:02X}00"
+            bus.write_memory(f"{VIDEO_MEM_1_ADDR:04X}", f"{destination}{DMA_COPY_VMEM:02X}")
+            bus.flush()
+        log.debug("Kawari: palette copy fired after raster line %s", line)
+
+    def check_palette(self, channels: Sequence[int]) -> bool:
+        """Whether the palette now holds `channels`; deactivates either way."""
+        bus = self._bus
+        with self._lock:
+            try:
+                _write_flags(bus, FLAGS_OVERLAY)
+                read = [_overlay_byte(bus, offset) for offset in _PALETTE_OFFSETS]
+            finally:
+                _deactivate(bus)
+        want = [value & CHANNEL_MAX for value in channels]
+        return [None if v is None else v & CHANNEL_MAX for v in read] == want
+
+    def drop_palette(self) -> None:
+        with self._lock:
+            _deactivate(self._bus)
+
+
+def _write_word(bus: MemoryBus, address: int, value: int) -> None:
+    bus.write_memory(f"{address:04X}", f"{value & 0xFF:02X}{value >> 8:02X}")
+
+
+def _raster_line(bus: MemoryBus) -> int | None:
+    data = bus.read_memory(VIC.D011_CONTROL_1, 2)
+    if not data or len(data) < 2:
+        return None
+    return ((data[0] & 0x80) << 1) | data[1]
 
 
 def _write_flags(bus: MemoryBus, flags: int) -> None:
@@ -182,10 +279,11 @@ def _read_info(bus: MemoryBus) -> KawariInfo | None:
         log.debug("Kawari: chip-model register read %r, not a Kawari", model)
         return None
     channels = [_overlay_byte(bus, offset) for offset in _PALETTE_OFFSETS]
+    spare = [_overlay_byte(bus, offset) for offset in _SPARE_OFFSETS]
     version = [_overlay_byte(bus, OVERLAY_VERSION + i) for i in range(2)]
     cap_lo = _overlay_byte(bus, OVERLAY_CAP_LO)
     variant = [_overlay_byte(bus, OVERLAY_VARIANT + i) for i in range(VARIANT_BYTES)]
-    answers = [*channels, *version, cap_lo, *variant]
+    answers = [*channels, *spare, *version, cap_lo, *variant]
     if any(v is None for v in answers):
         log.debug("Kawari: an overlay byte went unanswered")
         return None
@@ -199,6 +297,7 @@ def _read_info(bus: MemoryBus) -> KawariInfo | None:
         palette_rgb=tuple(
             (scaled[i], scaled[i + 1], scaled[i + 2]) for i in range(0, len(scaled), 3)
         ),
+        palette_spare=tuple(v for v in spare if v is not None),
     )
 
 

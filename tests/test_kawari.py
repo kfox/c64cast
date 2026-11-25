@@ -28,7 +28,12 @@ class FakeKawari:
 
     `stale_unlocks` is how many unlock sequences are ignored before one takes:
     on hardware the first after a deactivate never did. A write to overlay
-    offset `drop_offset` is lost, as a TeensyROM+ write the link absorbed is."""
+    offset `drop_offset` is lost, as a TeensyROM+ write the link absorbed is.
+
+    Video memory, port A's auto-increment and the VMEM copy (into the overlay
+    too) follow the Kawari's register doc. The raster beam advances
+    `lines_per_read` lines on every read of $D011, and each copy notes the
+    line it was fired on in `copies_at`."""
 
     def __init__(
         self,
@@ -41,6 +46,11 @@ class FakeKawari:
         hires_mode: int = 0,
         cap_lo: int = 0b11001110,
         drop_offset: int | None = None,
+        version: tuple[int, int] = (1, 17),
+        raster_line: int = 100,
+        lines_per_read: int = 6,
+        raster_answers: bool = True,
+        lose_trigger: bool = False,
     ):
         self.stock = stock
         self.overlay_reads_answered = overlay_reads_answered
@@ -52,18 +62,27 @@ class FakeKawari:
         self.drop_offset = drop_offset
         self.overlay = bytearray(256)
         self.overlay[kawari.OVERLAY_CHIP_MODEL] = model
-        self.overlay[kawari.OVERLAY_VERSION : kawari.OVERLAY_VERSION + 2] = bytes([1, 17])
+        self.overlay[kawari.OVERLAY_VERSION : kawari.OVERLAY_VERSION + 2] = bytes(version)
         self.overlay[kawari.OVERLAY_CAP_LO] = cap_lo
         self.overlay[kawari.OVERLAY_VARIANT : kawari.OVERLAY_VARIANT + 6] = b"MAINLG"
         for i, rgb in enumerate(_PALETTE_6BIT):
             self.overlay[
                 kawari.OVERLAY_PALETTE_RGB + 4 * i : kawari.OVERLAY_PALETTE_RGB + 4 * i + 3
             ] = bytes(rgb)
+            self.overlay[kawari.OVERLAY_PALETTE_RGB + 4 * i + 3] = 0x3F
         self._sequence = b""
         self.flag_writes: list[int] = []
         self.unlock_bytes_while_active = 0
         self.persist_while_active = False
         self.written: set[int] = set()
+        self.vram = bytearray(0x10000)
+        self.port_b_addr = 0
+        self.dma_count = 0
+        self.raster_line = raster_line
+        self.lines_per_read = lines_per_read
+        self.copies_at: list[int] = []
+        self.raster_answers = raster_answers
+        self.lose_trigger = lose_trigger
 
     def write_memory(self, address: str, data_hex: str) -> None:
         if self.stock:
@@ -97,15 +116,46 @@ class FakeKawari:
             self.port_addr = (self.port_addr & 0xFF00) | value
         elif addr == kawari.VIDEO_MEM_1_ADDR + 1:
             self.port_addr = (self.port_addr & 0x00FF) | (value << 8)
+        elif addr in (kawari.DMA_COUNT, kawari.DMA_COUNT + 1):
+            shift = 8 * (addr - kawari.DMA_COUNT)
+            self.dma_count = (self.dma_count & ~(0xFF << shift)) | (value << shift)
+        elif addr == kawari.VIDEO_MEM_2_ADDR:
+            self.port_b_addr = (self.port_b_addr & 0xFF00) | value
+        elif addr == kawari.VIDEO_MEM_2_ADDR + 1:
+            self.port_b_addr = (self.port_b_addr & 0x00FF) | (value << 8)
+        elif addr == kawari.VIDEO_MEM_1_VAL and (
+            self.flags & kawari.FLAGS_BOTH_PORTS_DMA == kawari.FLAGS_BOTH_PORTS_DMA
+        ):
+            if value == kawari.DMA_COPY_VMEM and not self.lose_trigger:
+                self._copy()
         elif addr == kawari.VIDEO_MEM_1_VAL and self.flags & kawari.FLAGS_OVERLAY:
             if self.port_addr == self.drop_offset:
                 self.drop_offset = None
             else:
                 self.overlay[self.port_addr & 0xFF] = value
+        elif addr == kawari.VIDEO_MEM_1_VAL:
+            self.vram[self.port_addr] = value
+            if self.flags & 0x03 == kawari.FLAGS_PORT_A_INC:
+                self.port_addr = (self.port_addr + 1) & 0xFFFF
         elif addr == kawari.HIRES_MODE:
             self.hires_mode = value
 
+    def _copy(self) -> None:
+        self.copies_at.append(self.raster_line)
+        for i in range(self.dma_count):
+            value = self.vram[(self.port_b_addr + i) & 0xFFFF]
+            if self.flags & kawari.FLAGS_OVERLAY:
+                self.overlay[(self.port_addr + i) & 0xFF] = value
+            else:
+                self.vram[(self.port_addr + i) & 0xFFFF] = value
+        self.dma_count = 0
+
     def read_memory(self, address: int, length: int, timeout: float = 1.0) -> bytes | None:
+        if address == 0xD011 and length == 2:
+            if not self.raster_answers:
+                return None
+            self.raster_line = (self.raster_line + self.lines_per_read) % 263
+            return bytes([(self.raster_line >> 1) & 0x80, self.raster_line & 0xFF])
         if self.stock or not self.active:
             return b"\xff" * length
         if address == kawari.VIDEO_MEM_FLAGS:
@@ -235,7 +285,7 @@ class WritePaletteTest(unittest.TestCase):
 
 
 class _KawariApi(FakeKawari):
-    profile = SimpleNamespace(supports_read=True, supports_system_mode=False)
+    profile = SimpleNamespace(supports_read=True, supports_system_mode=False, family="tr")
     kawari: kawari.Kawari | None = None
 
 
@@ -305,7 +355,7 @@ class KawariWriterTest(unittest.TestCase):
         self.scene[8] = (kawari.to_8bit(10), kawari.to_8bit(30), kawari.to_8bit(60))
 
     def _writer(self) -> hp.KawariPaletteWriter:
-        return hp.KawariPaletteWriter(self.chip, self.record)
+        return hp.KawariPaletteWriter(self.chip, self.record, reads_track_the_beam=True)
 
     def test_the_machine_palette_is_the_one_found_at_startup(self):
         machine = self._writer().read_machine()
@@ -324,7 +374,7 @@ class KawariWriterTest(unittest.TestCase):
         writer = self._writer()
         writer.push(self.scene)
         saved = json.loads(self.record.read_text())
-        np.testing.assert_array_equal(saved["shows"], self.scene)
+        np.testing.assert_array_equal(saved["shows"], [self.scene])
         np.testing.assert_array_equal(saved["machine"], self.machine)
         writer.push(self.machine)
         self.assertFalse(self.record.exists())
@@ -344,7 +394,9 @@ class KawariWriterTest(unittest.TestCase):
         self._writer().push(self.scene)
         found = kawari.probe(self.bus)
         assert found is not None
-        self.assertIsNone(hp.KawariPaletteWriter(found, self.record).read_machine())
+        self.assertIsNone(
+            hp.KawariPaletteWriter(found, self.record, reads_track_the_beam=True).read_machine()
+        )
         self.assertTrue(self.record.exists())
 
     def test_an_unreadable_record_is_ignored(self):
@@ -359,6 +411,109 @@ class KawariWriterTest(unittest.TestCase):
         assert machine is not None
         np.testing.assert_array_equal(machine, self.machine)
         self.assertFalse(self.record.exists())
+
+
+class ShotPushTest(unittest.TestCase):
+    """A shot's table: staged by `load`, copied in by `go`, checked by `ack`."""
+
+    def setUp(self):
+        self.bus = FakeKawari()
+        found = kawari.probe(self.bus)
+        assert found is not None
+        self.chip = found
+        self.record = Path(tempfile.mkdtemp()) / "kawari-palette.json"
+        self.machine = _bgr(_PALETTE_6BIT)
+        self.shot = self.machine.copy()
+        self.shot[5] = (kawari.to_8bit(1), kawari.to_8bit(2), kawari.to_8bit(3))
+        self.shot[9] = (kawari.to_8bit(40), kawari.to_8bit(50), kawari.to_8bit(60))
+        self.writer = hp.KawariPaletteWriter(self.chip, self.record, reads_track_the_beam=True)
+
+    def _record_shows(self) -> list[np.ndarray]:
+        return [np.asarray(t) for t in json.loads(self.record.read_text())["shows"]]
+
+    def test_a_shot_changes_the_palette_and_leaves_the_kawari_locked(self):
+        self.assertTrue(self.writer.load(self.shot, lambda: False))
+        self.assertEqual(self.bus.palette_6bit(), hp._kawari_channels(self.machine))
+        self.writer.go()
+        self.writer.ack()
+        self.assertEqual(self.bus.palette_6bit(), hp._kawari_channels(self.shot))
+        self.assertFalse(self.bus.active)
+        self.assertFalse(self.bus.persist_while_active)
+
+    def test_a_shot_keeps_the_spare_bytes_the_kawari_had(self):
+        self.writer.load(self.shot, lambda: False)
+        self.writer.go()
+        self.writer.ack()
+        spare = [self.bus.overlay[o] for o in kawari._SPARE_OFFSETS]
+        self.assertEqual(spare, [0x3F] * kawari.PALETTE_COLORS)
+
+    def test_the_copy_waits_for_the_next_window_when_one_is_already_open(self):
+        self.bus.raster_line = 252
+        self.writer.load(self.shot, lambda: False)
+        self.writer.go()
+        # 258 and 1-19 are the window that was open; 25 is the picture, and
+        # 253 the next window.
+        self.assertEqual(self.bus.copies_at, [253])
+
+    def test_the_copy_fires_as_the_window_opens(self):
+        self.bus.raster_line = 100
+        self.writer.load(self.shot, lambda: False)
+        self.writer.go()
+        self.assertEqual(self.bus.copies_at, [256])
+
+    def test_a_raster_that_cannot_be_read_does_not_hold_the_copy(self):
+        self.bus.raster_answers = False
+        self.writer.load(self.shot, lambda: False)
+        self.writer.go()
+        self.writer.ack()
+        self.assertEqual(self.bus.palette_6bit(), hp._kawari_channels(self.shot))
+
+    def test_a_copy_that_never_ran_fails_the_ack(self):
+        self.bus.lose_trigger = True
+        self.writer.load(self.shot, lambda: False)
+        self.writer.go()
+        with self.assertRaises(RuntimeError):
+            self.writer.ack()
+        self.assertFalse(self.bus.active)
+
+    def test_a_stopped_load_is_dropped(self):
+        self.assertFalse(self.writer.load(self.shot, lambda: True))
+        self.writer.abort()
+        self.assertFalse(self.bus.active)
+        self.assertEqual(self.bus.copies_at, [])
+
+    def test_until_the_ack_the_record_names_both_tables(self):
+        self.writer.load(self.shot, lambda: False)
+        shows = self._record_shows()
+        self.assertEqual(len(shows), 2)
+        np.testing.assert_array_equal(shows[0], self.machine)
+        np.testing.assert_array_equal(shows[1], self.shot)
+        self.writer.go()
+        self.writer.ack()
+        shows = self._record_shows()
+        self.assertEqual(len(shows), 1)
+        np.testing.assert_array_equal(shows[0], self.shot)
+
+    def test_an_abort_after_the_copy_keeps_its_table_in_the_record(self):
+        self.writer.load(self.shot, lambda: False)
+        self.writer.go()
+        self.writer.abort()
+        later = self.machine.copy()
+        later[3] = (0, 0, 0)
+        self.writer.load(later, lambda: False)
+        shows = self._record_shows()
+        self.assertTrue(any(np.array_equal(t, self.shot) for t in shows))
+
+    def test_a_run_that_died_mid_shot_has_its_palette_put_back(self):
+        self.writer.load(self.shot, lambda: False)
+        self.writer.go()
+        found = kawari.probe(self.bus)
+        assert found is not None
+        with self.assertLogs("c64cast.hw.hardware_palette", level="WARNING"):
+            machine = hp.put_back_a_dead_runs_kawari_palette(found, self.record)
+        assert machine is not None
+        np.testing.assert_array_equal(machine, self.machine)
+        self.assertEqual(self.bus.palette_6bit(), hp._kawari_channels(self.machine))
 
 
 class _KawariBackend(_KawariApi):
@@ -386,11 +541,30 @@ class KawariProvisionTest(unittest.TestCase):
         control = self._provision(api)
         assert control is not None
         self.assertEqual(control.channel_bits, 6)
-        self.assertFalse(control.follows_shots)
+        self.assertTrue(control.follows_shots)
         self.assertIs(api.hardware_palette, control)
 
     def test_a_kawari_without_one_is_skipped(self):
         self.assertIsNone(self._provision(_KawariBackend(cap_lo=0b11000110)))
+
+    def test_a_kawari_that_cannot_copy_into_its_palette_keeps_one_per_video(self):
+        control = self._provision(_KawariBackend(version=(1, 15)))
+        assert control is not None
+        self.assertFalse(control.follows_shots)
+
+    def test_the_first_firmware_that_can_copy_follows_shots(self):
+        control = self._provision(_KawariBackend(version=kawari.OVERLAY_COPY_FIRMWARE))
+        assert control is not None
+        self.assertTrue(control.follows_shots)
+
+    def test_a_kawari_behind_an_ultimate_keeps_one_palette_per_video(self):
+        api = _KawariBackend()
+        api.profile = SimpleNamespace(
+            supports_read=True, supports_system_mode=False, family="ultimate"
+        )
+        control = self._provision(api)
+        assert control is not None
+        self.assertFalse(control.follows_shots)
 
 
 class DeadRunTest(unittest.TestCase):
@@ -414,7 +588,9 @@ class DeadRunTest(unittest.TestCase):
         scene[8] = (kawari.to_8bit(10), kawari.to_8bit(30), kawari.to_8bit(60))
         found = kawari.probe(self.api)
         assert found is not None
-        hp.KawariPaletteWriter(found, kawari_palette_record_path()).push(scene)
+        hp.KawariPaletteWriter(found, kawari_palette_record_path(), reads_track_the_beam=True).push(
+            scene
+        )
         self.record = kawari_palette_record_path()
 
     def _machine_6bit(self) -> list[int]:
