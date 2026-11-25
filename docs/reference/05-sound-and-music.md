@@ -803,10 +803,10 @@ analysis.
 
 | Feature | What it is |
 |---|---|
-| `level` | Loudness *relative* to a rolling peak, so a quiet feed still reaches full scale and true silence reads zero |
-| `onset` | A transient: a spectral-flux crossing against an adaptive threshold, latching to 1 and decaying |
 | `bands` | Eight log-spaced bands, the same ranges the spectrum overlay draws |
 | `bpm`, `beat_phase` | An estimated tempo and a continuously integrated phase |
+| `level` | Loudness *relative* to a rolling peak, so a quiet feed still reaches full scale and true silence reads zero |
+| `onset` | A transient: a spectral-flux crossing against an adaptive threshold, latching to 1 and decaying |
 
 `[audio_features].onset_sensitivity` is the one knob worth turning: dense,
 heavily compressed material reads as continuous transients at high values, and

@@ -288,6 +288,46 @@ class LiveMarkTest(unittest.TestCase):
         self.assertEqual(gen.marks("audio", fd), "")
 
 
+class AlphabeticalRowsTest(unittest.TestCase):
+    """A reader scans a generated table for a name, so its rows are in
+    alphabetical order rather than the order the program declares them in.
+
+    The index sorts by its own key and the compatibility page's rule table is
+    grouped by rule, so those two are left out.
+    """
+
+    UNSORTED = {gen.INDEX_PATH.name, "23-appendix-d-compatibility.md"}
+
+    @staticmethod
+    def _name(first_cell: str) -> str:
+        names = re.findall(r"`([^`]+)`", first_cell.split("<br>")[0])
+        long = [n for n in names if n.startswith("--")]
+        return (long or names)[0].lstrip("-").lower()
+
+    def _tables(self, text: str):
+        rows: list[str] = []
+        for line in [*text.splitlines(), ""]:
+            if line.startswith("|"):
+                rows.append(line.split("|")[1])
+            elif rows:
+                yield [self._name(cell) for cell in rows[2:]]
+                rows = []
+
+    def test_every_generated_table_is_alphabetical(self):
+        for path, build in gen.APPENDICES.items():
+            if path.name in self.UNSORTED:
+                continue
+            for names in self._tables(gen.render(build)):
+                with self.subTest(file=path.name, first=names[0]):
+                    self.assertEqual(names, sorted(names))
+
+    def test_a_knob_list_is_alphabetical(self):
+        cls = generators.REGISTRY["fire"]
+        self.assertNotEqual(list(cls.LIVE_PARAMS), sorted(cls.LIVE_PARAMS))
+        names = [bit.split("`")[1] for bit in gen._live_params(cls)]
+        self.assertEqual(names, sorted(cls.LIVE_PARAMS))
+
+
 class DeclaredByTest(unittest.TestCase):
     """The card's rendering of Appendix F's owner list.
 
@@ -312,11 +352,12 @@ class DeclaredByTest(unittest.TestCase):
     def test_a_sole_owner_is_named(self):
         self.assertEqual(gen.declared_by(self._target(["moire2"])), "`moire2`")
 
-    def test_several_owners_are_spelled_out(self):
+    def test_several_owners_are_spelled_out_alphabetically(self):
         owners = self.members[:3]
+        self.assertNotEqual(owners, sorted(owners))
         self.assertEqual(
             gen.declared_by(self._target(owners)),
-            ", ".join(f"`{name}`" for name in owners),
+            ", ".join(f"`{name}`" for name in sorted(owners)),
         )
 
     def test_every_owner_is_all(self):
@@ -327,7 +368,7 @@ class DeclaredByTest(unittest.TestCase):
         owners = self.members[2:]
         self.assertEqual(
             gen.declared_by(self._target(owners)),
-            "all but " + ", ".join(f"`{name}`" for name in left_out),
+            "all but " + ", ".join(f"`{name}`" for name in sorted(left_out)),
         )
 
     def test_an_even_split_is_spelled_out_rather_than_inverted(self):

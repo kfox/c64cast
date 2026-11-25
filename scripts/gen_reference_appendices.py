@@ -474,7 +474,10 @@ def appendix_scenes() -> list[str]:
     def doc(name: str) -> introspect.FieldDoc:
         return next(fd for sd in types for fd in sd.fields if fd.name == name)
 
-    common = [fd for fd in types[0].fields if len(takers[fd.name]) == len(types)]
+    common = sorted(
+        (fd for fd in types[0].fields if len(takers[fd.name]) == len(types)),
+        key=lambda fd: fd.name,
+    )
     # A key all but one type takes is a general property with an exception.
     absentee: dict[str, str] = {
         name: next(sd.name for sd in types if sd.name not in who)
@@ -505,7 +508,7 @@ def appendix_scenes() -> list[str]:
     out += fields_table("Key", [[typed(fd), describe("scenes", fd)] for fd in common])
 
     for missing in dict.fromkeys(absentee.values()):
-        names = [name for name, absent in absentee.items() if absent == missing]
+        names = sorted(name for name, absent in absentee.items() if absent == missing)
         out += [prose(f"Every type but {code(missing)} takes these as well."), ""]
         out += fields_table(
             "Key", [[typed(doc(name)), describe("scenes", doc(name))] for name in names]
@@ -519,13 +522,18 @@ def appendix_scenes() -> list[str]:
             modes = ", ".join(code(d) for d in sd.displays)
             out += [prose(f"Display modes: {modes}."), ""]
         own = [fd for fd in sd.fields if fd.name not in common_names]
+        # The fragment keeps declaration order (see `sample_rows`); the table
+        # is looked up by name.
         out += snippet(
             "[[scenes]]",
             sample_rows(own, first=[("type", f'"{sd.name}"', "")]),
             required=required_names(own),
         )
         if own:
-            out += fields_table("Key", [[typed(fd), describe("scenes", fd)] for fd in own])
+            out += fields_table(
+                "Key",
+                [[typed(fd), describe("scenes", fd)] for fd in sorted(own, key=lambda fd: fd.name)],
+            )
         else:
             out += [prose("No keys beyond the common ones above."), ""]
     return out
@@ -574,7 +582,10 @@ def appendix_overlays() -> list[str]:
             indent="  ",
             required=required_names(od.params),
         )
-        out += fields_table("Parameter", [[typed(p), cell(p.help)] for p in od.params])
+        out += fields_table(
+            "Parameter",
+            [[typed(p), cell(p.help)] for p in sorted(od.params, key=lambda p: p.name)],
+        )
     return out
 
 
@@ -631,9 +642,11 @@ def _live_params(cls: type) -> list[str]:
     """
     params: dict[str, tuple[float, float]] = getattr(cls, "LIVE_PARAMS", {}) or {}
     choices: dict[str, tuple[str, ...]] = getattr(cls, "LIVE_CHOICES", {}) or {}
-    bits = [f"{code(name)} {scalar_range(lo, hi)}" for name, (lo, hi) in params.items()]
-    bits += [f"{code(name)} {code(f'{len(values)} values')}" for name, values in choices.items()]
-    return bits
+    bits = {name: f"{code(name)} {scalar_range(lo, hi)}" for name, (lo, hi) in params.items()}
+    bits |= {
+        name: f"{code(name)} {code(f'{len(values)} values')}" for name, values in choices.items()
+    }
+    return [bits[name] for name in sorted(bits)]
 
 
 # The names the two fragments in Appendix E are written around, pinned rather
@@ -680,7 +693,7 @@ def appendix_generators() -> list[str]:
         "Generator",
         [
             [identity(code(name), *_live_params(cls)), cell(first_sentence(cls.__doc__ or ""))]
-            for name, cls in generators.REGISTRY.items()
+            for name, cls in sorted(generators.REGISTRY.items())
         ],
     )
     out += ["## Effects", ""]
@@ -711,7 +724,7 @@ def appendix_generators() -> list[str]:
         "Effect",
         [
             [identity(code(name), *_live_params(cls)), cell(first_sentence(cls.__doc__ or ""))]
-            for name, cls in effects.REGISTRY.items()
+            for name, cls in sorted(effects.REGISTRY.items())
         ],
     )
     return out
@@ -731,7 +744,7 @@ def _live_target_rows(targets: Sequence[introspect.LiveTargetDoc]) -> list[list[
         else:
             span = ", ".join(code(c) for c in t.choices)
         name = t.target.rpartition(".")[2]
-        rows.append([code(name), code(t.kind), span, ", ".join(code(o) for o in t.owners)])
+        rows.append([code(name), code(t.kind), span, ", ".join(code(o) for o in sorted(t.owners))])
     return rows
 
 
@@ -782,7 +795,7 @@ def appendix_live_targets() -> list[str]:
     # Headed by the holder, which is the half of the target the rows no longer
     # spell: `mode` joins `dither_strength` to make one.
     for holder in dict.fromkeys(t.holder for t in targets):
-        mine = [t for t in targets if t.holder == holder]
+        mine = sorted((t for t in targets if t.holder == holder), key=lambda t: t.target)
         out += [f"## `{holder}`", ""]
         gloss = _HOLDER_GLOSS[holder]
         out += [prose(f"{gloss}. A row's target is {code(holder + '.')} and its name."), ""]
@@ -792,17 +805,26 @@ def appendix_live_targets() -> list[str]:
     return out
 
 
+def _flag_sort_key(action: argparse.Action) -> str:
+    """`-u, --url` files under `url`: the long name is the one a reader looks up."""
+    long = [s for s in action.option_strings if s.startswith("--")]
+    return (long or action.option_strings or [action.dest])[0].lstrip("-").lower()
+
+
 def appendix_cli() -> list[str]:
     parser = climod.build_parser()
     out = front_matter(
         "G",
         "Command-Line Flags",
-        "Every option `c64cast` accepts, in the groups `-h` prints them in. A flag "
+        "Every option `c64cast` accepts, in the groups `-h` prints them in and "
+        "alphabetical within each. A flag "
         "given here beats the same setting in a configuration file, which beats "
         "machine settings, which beats the built-in default.",
     )
     for group in parser._action_groups:
-        actions = [a for a in group._group_actions if a.help != argparse.SUPPRESS]
+        actions = sorted(
+            (a for a in group._group_actions if a.help != argparse.SUPPRESS), key=_flag_sort_key
+        )
         if not actions:
             continue
         out += [f"## {group.title.title() if group.title else 'Options'}", ""]
@@ -842,7 +864,7 @@ def appendix_examples() -> list[str]:
         "",
     ]
     rows = []
-    for path in paths:
+    for path in sorted(paths, key=pathsmod.example_name):
         summary = cell(introspect.example_summary(path, full=True))
         if introspect.example_needs_media(path):
             summary += " *(needs your own media)*"
@@ -1305,12 +1327,12 @@ def declared_by(target: introspect.LiveTargetDoc) -> str:
     # the name the reader is matching against the screen.
     if len(target.owners) == 1:
         return code(target.owners[0])
-    missing = [name for name in _holder_members(target.holder) if name not in target.owners]
+    missing = sorted(set(_holder_members(target.holder)) - set(target.owners))
     if not missing:
         return "all"
     if len(missing) * 2 < len(target.owners):
         return "all but " + ", ".join(code(name) for name in missing)
-    return ", ".join(code(owner) for owner in target.owners)
+    return ", ".join(code(owner) for owner in sorted(target.owners))
 
 
 @functools.cache
@@ -1340,7 +1362,7 @@ def card_live_targets() -> list[str]:
         "",
     ]
     for group in dict.fromkeys(t.group for t in targets):
-        mine = [t for t in targets if t.group == group]
+        mine = sorted((t for t in targets if t.group == group), key=lambda t: t.target)
         out += [f"## {group}", ""]
         rows = []
         for t in mine:

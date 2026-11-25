@@ -22,6 +22,10 @@ A demo tagged *needs your own media* points at `assets/`, which ships empty beca
 | **`effect-chain`** | Layerable effect chain demo (Live DJ/VJ Phase 3): stack several pixel effects on one scene, each independently tunable and bypass-toggleable live, with the whole stack tempo-locked to the [performance] beat grid. |
 | **`effect-reactive`** | a MUSIC-REACTIVE pixel effect over a generative source + SID-file playback. |
 | **`effect-trails`** | a per-scene pixel EFFECT layered on a generative source. |
+| **`ensemble/left`** | Per-system config for the leftmost screen in the ensemble. |
+| **`ensemble/master`** | Master config for a 3-system ensemble (a row of three Ultimate 64s laid out left → middle → right, viewed from the front). |
+| **`ensemble/middle`** | Per-system config for the middle screen. |
+| **`ensemble/right`** | Per-system config for the rightmost screen — also the *conductor* for the cross-system big_text broadcast (since the message scrolls right-to-left, it enters on the rightmost screen). |
 | **`hello`** | c64cast "hello world" — the simplest thing that puts something on the screen. |
 | **`menu`** | the on-C64 menu. |
 | **`overlay-big_text`** | blank canvas + big_text overlay. |
@@ -64,8 +68,8 @@ A demo tagged *needs your own media* points at `assets/`, which ships empty beca
 | **`scene-launcher`** | launch a native C64 program (game or demo) on the U64 and hand the machine over to it. *(needs your own media)* |
 | **`scene-midi`** | MIDI → SID synth + oscilloscope. |
 | **`scene-slideshow`** | cycle through still images on the C64 display. *(needs your own media)* |
-| **`scene-video-sampler`** | video playback with HIGH-FIDELITY audio via the U64's "Ultimate Audio" FPGA PCM sampler (instead of the lo-fi 4-bit $D418 DAC). *(needs your own media)* |
 | **`scene-video`** | video file ("video") playback with audio. *(needs your own media)* |
+| **`scene-video-sampler`** | video playback with HIGH-FIDELITY audio via the U64's "Ultimate Audio" FPGA PCM sampler (instead of the lo-fi 4-bit $D418 DAC). *(needs your own media)* |
 | **`scene-waveform`** | SID playback ("waveform" scene). *(needs your own media)* |
 | **`scene-webcam-audio`** | webcam → PETSCII + live mic through the SID DAC. |
 | **`scene-webcam-hires`** | webcam → hi-res bitmap mode. |
@@ -78,7 +82,3 @@ A demo tagged *needs your own media* points at `assets/`, which ships empty beca
 | **`vision-gesture`** | webcam hand-gesture control (the vision controller). |
 | **`vision-modes`** | Vision demo: SWIPE cycles the video MODE; hold-open cycles the style within a mode; pinch pauses. |
 | **`wled-control`** | Control c64cast FROM the WLED app (WLED bridge Mode 1 — "listen"). *(needs your own media)* |
-| **`ensemble/left`** | Per-system config for the leftmost screen in the ensemble. |
-| **`ensemble/master`** | Master config for a 3-system ensemble (a row of three Ultimate 64s laid out left → middle → right, viewed from the front). |
-| **`ensemble/middle`** | Per-system config for the middle screen. |
-| **`ensemble/right`** | Per-system config for the rightmost screen — also the *conductor* for the cross-system big_text broadcast (since the message scrolls right-to-left, it enters on the rightmost screen). |
