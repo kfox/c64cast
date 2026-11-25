@@ -2,7 +2,9 @@
 wait in the decode buffer ([color].hardware_palette_shots).
 
 A stretch of the video gets its own 16 colors from its first `FIT_S`
-seconds. A stretch starts at a shot cut, or where the frames have drifted
+seconds, or fewer where its first frame would otherwise show before its table
+could be fitted and loaded: the decoder runs only as far ahead of the picture
+as the sound lets it. A stretch starts at a shot cut, or where the frames have drifted
 away from the colors the current stretch was fitted to: a cut detector sees
 nothing in a dissolve, and a table fitted to the frames before one leaves the
 shot after it in the wrong colors.
@@ -31,6 +33,9 @@ FIT_S = 2.0
 # table quickly from changing colors on every rapid cut.
 MIN_STRETCH_FLOOR_S = 0.5
 _LOAD_MARGIN_S = 0.1
+# The fit runs on a worker thread beside the render and the decode: ~0.1 s
+# measured, with room for a busy host.
+FIT_ALLOWANCE_S = 0.3
 # A stretch has drifted once its frames sit this many times farther from its
 # table than the frames it was fitted to, for this many frames running.
 DRIFT_RATIO = 1.6
@@ -43,6 +48,12 @@ def min_stretch_s(load_time_s: float) -> float:
     """The shortest stretch worth its own table on a machine whose writer
     loads one in `load_time_s`."""
     return max(MIN_STRETCH_FLOOR_S, load_time_s + _LOAD_MARGIN_S)
+
+
+def ready_ahead_s(load_time_s: float) -> float:
+    """How long before a stretch's first frame shows its fit frames must be
+    in, on a machine whose writer loads a table in `load_time_s`."""
+    return load_time_s + FIT_ALLOWANCE_S
 
 
 class PaletteShot:
@@ -75,7 +86,8 @@ class PaletteShotTracker:
 
     `shape` turns a decoded picture into what the display mode's quantizer
     sees, which is what the table is fitted to and what drift is measured
-    on."""
+    on. A stretch is handed over once it has `FIT_S` of frames, or once its
+    first frame is due on screen within `ready_ahead_s`."""
 
     def __init__(
         self,
@@ -83,10 +95,12 @@ class PaletteShotTracker:
         on_ready: Callable[[PaletteShot], None],
         *,
         min_stretch_s: float,
+        ready_ahead_s: float,
     ) -> None:
         self._shape = shape
         self._on_ready = on_ready
         self._min_stretch_s = min_stretch_s
+        self._ready_ahead_s = ready_ahead_s
         self._detector = AdaptiveCutDetector(ratio=SHOT_CUT_RATIO)
         self._recent: deque[tuple[float, np.ndarray]] = deque(
             maxlen=max(self._detector.window + 1, DRIFT_FRAMES)
@@ -103,8 +117,11 @@ class PaletteShotTracker:
         self._recent.clear()
         self._restarted = True
 
-    def observe(self, pts: float, frame_bgr: np.ndarray) -> tuple[float, PaletteShot] | None:
-        """Fold in the next decoded frame. Returns the pts of a frame just
+    def observe(
+        self, pts: float, frame_bgr: np.ndarray, shown_pts: float | None = None
+    ) -> tuple[float, PaletteShot] | None:
+        """Fold in the next decoded frame. `shown_pts` is where the picture is
+        now, None before it has started. Returns the pts of a frame just
         found to start a stretch, with that stretch."""
         small = _downscale(frame_bgr)
         shaped = self._shape(small)
@@ -125,7 +142,7 @@ class PaletteShotTracker:
             since = list(self._recent)[-DRIFT_FRAMES:]
             if self._room_after(since[0][0]):
                 return self._start(since)
-        self._collect(pts, shaped)
+        self._collect(pts, shaped, shown_pts)
         return None
 
     def _room_after(self, pts: float) -> bool:
@@ -142,12 +159,14 @@ class PaletteShotTracker:
             self._drifting = 0
         return self._drifting >= DRIFT_FRAMES
 
-    def _collect(self, pts: float, shaped: np.ndarray) -> None:
+    def _collect(self, pts: float, shaped: np.ndarray, shown_pts: float | None) -> None:
         if not self._collecting or self._shot is None:
             return
-        if pts - self._shot.pts < FIT_S:
-            self._shot.frames.append(shaped)
-        else:
+        if pts - self._shot.pts >= FIT_S:
+            self._finish()
+            return
+        self._shot.frames.append(shaped)
+        if shown_pts is not None and self._shot.pts - shown_pts <= self._ready_ahead_s:
             self._finish()
 
     def _finish(self) -> None:

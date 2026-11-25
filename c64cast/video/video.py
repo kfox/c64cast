@@ -1327,6 +1327,9 @@ class AVFileSource:
         # off the buffer, and its last clock read (wall time, position).
         self._frames_taken = 0
         self._clock_read: tuple[float, float] | None = None
+        # The clock the consumer last chose a frame by on this pass, for the
+        # palette tracker to see how far ahead the decode runs.
+        self._shown_pts: float | None = None
 
         # Unity gain when there is no audio stream or the scan fails.
         self.audio_gain: float = 1.0
@@ -1628,6 +1631,7 @@ class AVFileSource:
         self._audio_fed_s = None
         self._audio_trim = 0
         self._video_read_s = None
+        self._shown_pts = None
         self._audio_lag_s = 0.0
         self._dry_stall_level, self._dry_window = 0, None
         self._audio_shift_s = 0.0
@@ -1856,7 +1860,7 @@ class AVFileSource:
         the demuxer until the consumer drains is correct in both modes;
         host-DMA just doesn't hit the wait."""
         self._video_read_s = self._clock_to_content(pts)
-        cut = self.shot_tracker.observe(pts, img) if self.shot_tracker is not None else None
+        cut = self._observe_shot(pts, img)
         while True:
             if self._closed:
                 return False
@@ -1881,6 +1885,16 @@ class AVFileSource:
             self._watch_dry_pace(time.monotonic(), due_pts, taken, clock_read)
             self._fill_dry_stretch(oldest, newest)
             time.sleep(0.005)
+
+    def _observe_shot(
+        self, pts: float, img: np.ndarray
+    ) -> tuple[float, ShotFit] | tuple[float, PaletteShot] | None:
+        tracker = self.shot_tracker
+        if isinstance(tracker, PaletteShotTracker):
+            return tracker.observe(pts, img, self._shown_pts)
+        if tracker is not None:
+            return tracker.observe(pts, img)
+        return None
 
     def _watch_dry_pace(
         self,
@@ -2302,6 +2316,7 @@ class AVFileSource:
                 else:
                     break
             self._clock_read = (time.monotonic(), audio_position_s)
+            self._shown_pts = audio_position_s
             if chosen_img is None:
                 return None
             # Telemetry: VideoScene logs audio_position_s - last_frame_pts as
