@@ -4,5 +4,7 @@
   saved to the Kawari's EEPROM. A Kawari keeps its palette through a reset, so
   a run that ends early leaves its colors on the machine; the next run notices
   and puts the Kawari's own palette back first. A hires mode an earlier
-  program left on is turned off at startup. On a Kawari, a video keeps one
-  palette for now.
+  program left on is turned off at startup. On Kawari firmware 1.16 or newer,
+  each shot of a video gets its own colors, as on an Ultimate, and they change
+  between frames rather than partway down the picture; older firmware keeps
+  one palette per video.

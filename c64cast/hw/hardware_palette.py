@@ -141,22 +141,31 @@ class KawariPaletteWriter:
     registers. Every push is read back, because the TeensyROM+ link absorbs a
     failed write rather than raising.
 
+    A shot's table is staged in video memory by `load` and copied into the
+    palette by `go` in the raster window where the double buffer flips, so
+    the colors change with the picture.
+
     Its palette survives a C64 reset, so there are no resets to watch, and it
     survives a run that dies too. Each push therefore records what the
-    machine shows and the palette the run found (`kawari_palette_record_path`),
-    and the next run's `put_back_a_dead_runs_kawari_palette` acts on it."""
+    machine may show and the palette the run found
+    (`kawari_palette_record_path`), and the next run's
+    `put_back_a_dead_runs_kawari_palette` acts on it."""
 
     device = "the Kawari"
     channel_bits = 6
     load_time_s = 0.05
     ack_delay_s = 0.0
-    follows_shots = False
     unreadable = "the Kawari did not take back the palette a run that ended early found"
 
     def __init__(self, chip: kawari.Kawari, record: Path) -> None:
+        self.follows_shots = chip.info.version >= kawari.OVERLAY_COPY_FIRMWARE
         self._chip = chip
         self._record = record
         self._machine = _kawari_bgr(chip)
+        # What the Kawari may be showing: one table, or more while a copy's
+        # outcome is unknown.
+        self._may_show = [self._machine.copy()]
+        self._staged: np.ndarray | None = None
 
     def read_machine(self) -> np.ndarray | None:
         # A record that still matches means the put-back at detection failed:
@@ -177,28 +186,45 @@ class KawariPaletteWriter:
         if not _write_kawari(self._chip, table):
             log.debug("hardware_palette: the Kawari's palette did not read back as written")
             return False
+        self._may_show = [table]
         self._note(table)
         return True
 
     def load(self, table_bgr: np.ndarray, stop: Callable[[], bool]) -> bool:
-        raise NotImplementedError("the Kawari writer does not follow shots")
+        table = np.asarray(table_bgr, dtype=np.uint8).reshape(16, 3)
+        self._note(*self._may_show, table)
+        self._staged = table
+        return self._chip.stage_palette(_kawari_channels(table), stop)
 
     def go(self) -> None:
-        raise NotImplementedError("the Kawari writer does not follow shots")
+        self._chip.fire_palette()
 
     def ack(self) -> None:
-        raise NotImplementedError("the Kawari writer does not follow shots")
+        staged, self._staged = self._staged, None
+        if staged is None:
+            raise RuntimeError("nothing was loaded to acknowledge")
+        if not self._chip.check_palette(_kawari_channels(staged)):
+            raise RuntimeError("the Kawari's palette did not read back as the shot's table")
+        self._may_show = [staged]
+        self._note(staged)
 
     def abort(self) -> None:
-        raise NotImplementedError("the Kawari writer does not follow shots")
+        # An abort after `go` leaves the staged table possibly showing.
+        staged, self._staged = self._staged, None
+        if staged is not None:
+            self._may_show.append(staged)
+        self._chip.drop_palette()
 
-    def _note(self, shows: np.ndarray) -> None:
+    def _note(self, *shows: np.ndarray) -> None:
         from c64cast.control.transport import atomic_write_text
 
-        if np.array_equal(shows, self._machine):
+        if all(np.array_equal(table, self._machine) for table in shows):
             _forget(self._record)
             return
-        record = {"machine": self._machine.tolist(), "shows": shows.tolist()}
+        record = {
+            "machine": self._machine.tolist(),
+            "shows": [table.tolist() for table in shows],
+        }
         try:
             self._record.parent.mkdir(parents=True, exist_ok=True)
             atomic_write_text(self._record, json.dumps(record))
@@ -234,22 +260,26 @@ def _kawari_bgr(chip: kawari.Kawari) -> np.ndarray:
     return rgb[:, ::-1].copy()
 
 
+def _kawari_channels(table_bgr: np.ndarray) -> list[int]:
+    return [kawari.to_6bit(int(v)) for row in table_bgr for v in row[::-1]]
+
+
 def _write_kawari(chip: kawari.Kawari, table_bgr: np.ndarray) -> bool:
-    channels = [kawari.to_6bit(int(v)) for row in table_bgr for v in row[::-1]]
+    channels = _kawari_channels(table_bgr)
     return chip.write_palette(channels) == tuple(channels)
 
 
 def _left_by_a_run(record: Path, found: np.ndarray) -> np.ndarray | None:
     try:
         saved = json.loads(record.read_text())
-        shows = np.asarray(saved["shows"], dtype=np.uint8).reshape(16, 3)
+        shows = np.asarray(saved["shows"], dtype=np.uint8).reshape(-1, 16, 3)
         machine = np.asarray(saved["machine"], dtype=np.uint8).reshape(16, 3)
     except FileNotFoundError:
         return None
     except (OSError, ValueError, KeyError, TypeError):
         log.debug("hardware_palette: unreadable %s ignored", record, exc_info=True)
         return None
-    if not np.array_equal(shows, found):
+    if not any(np.array_equal(table, found) for table in shows):
         # The machine was power-cycled, or its palette changed, since.
         _forget(record)
         return None

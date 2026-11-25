@@ -2085,8 +2085,8 @@ class ColorCfg:
             "fitted to the shot's first two seconds while it waits in the decode "
             "buffer and change on its first frame. A new set also comes where "
             "the picture drifts away from the current one, as in a dissolve. "
-            "Shots shorter than 1.3 s keep the colors of the shot before. Video "
-            "scenes only; on a Kawari a video keeps one set of colors."
+            "Shots shorter than 1.3 s on an Ultimate, or 0.5 s on a Kawari, keep "
+            "the colors of the shot before. Video scenes only."
         },
     )
     dither: str = field(
