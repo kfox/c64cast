@@ -232,19 +232,19 @@ time of writing it holds:
 
 | Overlay | Shows |
 |---|---|
-| `clock` | The time, and optionally the date |
-| `weather` | Temperature and conditions, polled in the background |
-| `rss` | A ticker fed from a news feed |
-| `scrolling_text` | A row of messages, scrolling one after another |
-| `marquee` | One string, scrolling continuously |
 | `big_text` | Enormous demo-scene letters sliding across the screen |
 | `callsign` | Fixed text in a corner, for a booth or a station ID |
+| `clock` | The time, and optionally the date |
 | `countdown` | Time remaining until a date you set |
-| `network` | Local address, hostname and link latency |
-| `spectrum_petscii` | An audio spectrum drawn as colored bars |
-| `spectrum_bitmap` | The same, at pixel resolution, on `mhires` |
 | `logo` | A block of PETSCII art loaded from a text file |
+| `marquee` | One string, scrolling continuously |
+| `network` | Local address, hostname and link latency |
 | `obs_status` | The current OBS Studio scene and dropped-frame count |
+| `rss` | A ticker fed from a news feed |
+| `scrolling_text` | A row of messages, scrolling one after another |
+| `spectrum_bitmap` | An audio spectrum at pixel resolution, on `mhires` |
+| `spectrum_petscii` | An audio spectrum drawn as colored bars |
+| `weather` | Temperature and conditions, polled in the background |
 
 ![Figure 4-2. A slideshow carrying a clock and a spectrum analyzer.](img/fig-4-2-overlays.png)
 

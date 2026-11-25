@@ -57,11 +57,11 @@ serve `127.0.0.1:8765`.
 
 | Route | Does |
 |---|---|
-| `GET /perf` | The phone console: clips, rack, tune, tempo, transport, looks, jump |
-| `GET /status` | Scene, index, paused, write latency |
-| `GET /scenes` | The playlist, and which scene is live |
 | `POST /pause`, `/resume`, `/skip` | What the keyboard does |
+| `GET /perf` | The phone console: clips, rack, tune, tempo, transport, looks, jump |
 | `POST /reload` | Rebuild the playlist at the next scene boundary |
+| `GET /scenes` | The playlist, and which scene is live |
+| `GET /status` | Scene, index, paused, write latency |
 
 Every route takes `?system=` naming one system, or `all`. Nothing on the console
 reaches the audience's screen.

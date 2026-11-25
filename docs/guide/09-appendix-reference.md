@@ -14,15 +14,15 @@ version you have installed.
 
 | Command | Answers |
 |---|---|
-| `--list-scenes` | Every kind of scene, with a one-line description |
-| `--list-overlays` | Every overlay, and which modes it works on |
-| `--list-modes` | Every display mode |
-| `--describe NAME` | Everything about one scene, overlay, section or mode |
 | `--compat` | The overlay against display-mode matrix |
+| `--describe NAME` | Everything about one scene, overlay, section or mode |
+| `--list-dac-calibrations` | The DAC calibrations measured on this computer, by the name to play one with |
+| `--list-devices` | Cameras and audio devices this computer can see |
+| `--list-modes` | Every display mode |
+| `--list-overlays` | Every overlay, and which modes it works on |
+| `--list-scenes` | Every kind of scene, with a one-line description |
 | `--print-schema` | The configuration schema, as JSON |
 | `--suggest-palette FILE` | The C64 colors that best represent an image |
-| `--list-devices` | Cameras and audio devices this computer can see |
-| `--list-dac-calibrations` | The DAC calibrations measured on this computer, by the name to play one with |
 
 `--describe` takes a bare name when it is unambiguous, and a prefixed one
 when it is not:
@@ -41,24 +41,24 @@ remembering:
 
 | Option | Does |
 |---|---|
-| `--config PATH` | Use a specific configuration file |
-| `-u TARGET` | Choose the hardware and where to find it |
-| `-s NTSC` or `-s PAL` | Set the machine's timing |
-| `-d INDEX`, `-d NAME`, `-d VID:PID` | Choose the webcam |
-| `-D INDEX`, `-D NAME` | Choose the audio input |
-| `--no-audio` | Mute |
-| `--loop` / `--no-loop` | Repeat the playlist, or stop after one pass |
-| `--serve` | Run as a host with a browser console instead of playing once |
-| `--doctor` | Check everything and report |
-| `--skip-probe` | Run checks without touching the Commodore |
 | `--check-for-updates` | Ask PyPI whether a newer c64cast release exists |
-| `--upgrade` | Detect how you installed c64cast and upgrade it, one command either way |
-| `--init` | Build a configuration interactively |
-| `--save-settings` | Remember this run's connection and devices |
+| `--config PATH` | Use a specific configuration file |
+| `-D INDEX`, `-D NAME` | Choose the audio input |
+| `-d INDEX`, `-d NAME`, `-d VID:PID` | Choose the webcam |
+| `--doctor` | Check everything and report |
 | `--dump-char-rom` | Re-read the character ROM from the Commodore |
+| `--init` | Build a configuration interactively |
 | `--install-char-rom PATH` | Use a character ROM dump you already have |
-| `-v` | Debug logging (`-vv` adds a line per HTTP request) |
 | `--log-file PATH` | Also write the log to a file |
+| `--loop` / `--no-loop` | Repeat the playlist, or stop after one pass |
+| `--no-audio` | Mute |
+| `-s NTSC` or `-s PAL` | Set the machine's timing |
+| `--save-settings` | Remember this run's connection and devices |
+| `--serve` | Run as a host with a browser console instead of playing once |
+| `--skip-probe` | Run checks without touching the Commodore |
+| `-u TARGET` | Choose the hardware and where to find it |
+| `--upgrade` | Detect how you installed c64cast and upgrade it, one command either way |
+| `-v` | Debug logging (`-vv` adds a line per HTTP request) |
 
 ### Naming Devices Instead of Counting Them
 
@@ -118,28 +118,28 @@ paths it actually resolved, which is the quickest way to settle any doubt.
 
 | Section | Governs |
 |---|---|
-| `[hardware]` | Which backend, and the machine's timing |
-| `[ultimate64]` | The C64U's address and password |
-| `[teensyrom]` | The TeensyROM's transport and port |
-| `[video]` | Camera selection and default display mode |
 | `[audio]` | Audio on or off, backend, sample rate |
-| `[dsp]` | Signal shaping before audio reaches the Commodore |
-| `[color]` | Dithering, palette, color matching |
 | `[audio_features]` | Reacting to live audio input |
+| `[color]` | Dithering, palette, color matching |
+| `[control]` | The web control service |
+| `[debug]` | Diagnostics and profiling |
+| `[dsp]` | Signal shaping before audio reaches the Commodore |
+| `[ensemble]` | Several Commodores driven together |
+| `[hardware]` | Which backend, and the machine's timing |
 | `[interstitial]` | The card shown between scenes |
+| `[menu]` | The on-screen menu on the Commodore |
+| `[midi_control]` | Live control from a MIDI device |
+| `[performance]` | The clip grid, the beat grid, and saved looks |
 | `[playlist]` | Looping, and video interleaving |
 | `[preview]` | The local mirror window |
 | `[recording]` | Recording to a video file |
-| `[control]` | The web control service |
-| `[web]` | The browser console host (`--serve`) |
-| `[midi_control]` | Live control from a MIDI device |
-| `[performance]` | The clip grid, the beat grid, and saved looks |
-| `[menu]` | The on-screen menu on the Commodore |
-| `[vision]` | Hand-gesture control |
-| `[wled]` | The LED bridge |
 | `[[scenes]]` | One per scene, in playing order |
 | `[[scenes.overlays]]` | One per overlay, within a scene |
-| `[ensemble]` | Several Commodores driven together |
-| `[debug]` | Diagnostics and profiling |
+| `[teensyrom]` | The TeensyROM's transport and port |
+| `[ultimate64]` | The C64U's address and password |
+| `[video]` | Camera selection and default display mode |
+| `[vision]` | Hand-gesture control |
+| `[web]` | The browser console host (`--serve`) |
+| `[wled]` | The LED bridge |
 
 Run `--describe section:NAME` for the full contents of any of them.

@@ -25,12 +25,12 @@ Restrictions: only on `blank`, `mcm`; not on `blank` while `[audio].use_reu_pump
 <!-- table: fields -->
 | Parameter | Description |
 |---|---|
-| **`messages`**<br>*Type:* `list`<br>*Default:* *(required)* | List of message strings (or {text, color} tables) to scroll. |
 | **`charset_path`**<br>*Type:* `str \| None`<br>*Default:* `None` | C64 character ROM used to rasterize the big glyphs (unset = the one c64cast dumped off your C64; see `--dump-char-rom`). |
-| **`row`**<br>*Type:* `str`<br>*Default:* `'middle'` | Vertical placement: 'top', 'middle', or 'bottom'. |
-| **`speed_cells_per_s`**<br>*Type:* `float`<br>*Default:* `8.0` | Scroll speed in character cells per second. |
 | **`inter_message_pause_s`**<br>*Type:* `float`<br>*Default:* `1.5` | Pause between consecutive messages. |
 | **`loop`**<br>*Type:* `bool`<br>*Default:* `True` | Loop the message list forever (false = play once then advance). |
+| **`messages`**<br>*Type:* `list`<br>*Default:* *(required)* | List of message strings (or {text, color} tables) to scroll. |
+| **`row`**<br>*Type:* `str`<br>*Default:* `'middle'` | Vertical placement: 'top', 'middle', or 'bottom'. |
+| **`speed_cells_per_s`**<br>*Type:* `float`<br>*Default:* `8.0` | Scroll speed in character cells per second. |
 | **`target_fps`**<br>*Type:* `float \| None`<br>*Default:* `None` | Override FPS used for px-per-frame snapping; unset = detect. |
 
 ## `callsign`
@@ -50,10 +50,10 @@ Restrictions: needs a text-capable mode.
 <!-- table: fields -->
 | Parameter | Description |
 |---|---|
-| **`text`**<br>*Type:* `str`<br>*Default:* `''` | The fixed string to display. |
+| **`bg_color`**<br>*Type:* `str`<br>*Default:* `'black'` | Cell background color, or 'none' to leave the scene showing through. |
 | **`corner`**<br>*Type:* `str`<br>*Default:* `'bottom-right'` | Screen corner to anchor the text (top-left/top-right/bottom-left/bottom-right). |
 | **`fg_color`**<br>*Type:* `str`<br>*Default:* `'white'` | Text color (C64 color name). |
-| **`bg_color`**<br>*Type:* `str`<br>*Default:* `'black'` | Cell background color, or 'none' to leave the scene showing through. |
+| **`text`**<br>*Type:* `str`<br>*Default:* `''` | The fixed string to display. |
 
 ## `clock`
 
@@ -72,13 +72,13 @@ Restrictions: needs a text-capable mode.
 <!-- table: fields -->
 | Parameter | Description |
 |---|---|
+| **`bg_color`**<br>*Type:* `str`<br>*Default:* `'black'` | Cell background color, or 'none' to leave the scene showing through. |
 | **`corner`**<br>*Type:* `str`<br>*Default:* `'top-right'` | Screen corner to anchor the text (top-left/top-right/bottom-left/bottom-right). |
-| **`format`**<br>*Type:* `str`<br>*Default:* `'%H:%M'` | strftime format for the time line (e.g. '%H:%M'). |
-| **`show_date`**<br>*Type:* `bool`<br>*Default:* `False` | Also show a second line with the date. |
 | **`date_format`**<br>*Type:* `str`<br>*Default:* `'%Y-%m-%d'` | strftime format for the date line when show_date is true. |
 | **`fg_color`**<br>*Type:* `str`<br>*Default:* `'white'` | Text color (C64 color name). |
-| **`bg_color`**<br>*Type:* `str`<br>*Default:* `'black'` | Cell background color, or 'none' to leave the scene showing through. |
+| **`format`**<br>*Type:* `str`<br>*Default:* `'%H:%M'` | strftime format for the time line (e.g. '%H:%M'). |
 | **`refresh_s`**<br>*Type:* `float`<br>*Default:* `1.0` | Seconds between value recomputes (the text is repainted every frame). |
+| **`show_date`**<br>*Type:* `bool`<br>*Default:* `False` | Also show a second line with the date. |
 
 ## `countdown`
 
@@ -98,13 +98,13 @@ Restrictions: needs a text-capable mode.
 <!-- table: fields -->
 | Parameter | Description |
 |---|---|
-| **`target`**<br>*Type:* `str`<br>*Default:* *(required)* | Target datetime (ISO 8601, e.g. '2026-12-31T23:59'). |
-| **`format`**<br>*Type:* `str`<br>*Default:* `'auto'` | 'auto' for adaptive units, or a template using {d}{h}{m}{s}. |
-| **`done_text`**<br>*Type:* `str`<br>*Default:* `'DONE'` | Text shown once the target has passed. |
-| **`corner`**<br>*Type:* `str`<br>*Default:* `'bottom-left'` | Screen corner to anchor the text (top-left/top-right/bottom-left/bottom-right). |
-| **`fg_color`**<br>*Type:* `str`<br>*Default:* `'yellow'` | Text color (C64 color name). |
 | **`bg_color`**<br>*Type:* `str`<br>*Default:* `'black'` | Cell background color, or 'none' to leave the scene showing through. |
+| **`corner`**<br>*Type:* `str`<br>*Default:* `'bottom-left'` | Screen corner to anchor the text (top-left/top-right/bottom-left/bottom-right). |
+| **`done_text`**<br>*Type:* `str`<br>*Default:* `'DONE'` | Text shown once the target has passed. |
+| **`fg_color`**<br>*Type:* `str`<br>*Default:* `'yellow'` | Text color (C64 color name). |
+| **`format`**<br>*Type:* `str`<br>*Default:* `'auto'` | 'auto' for adaptive units, or a template using {d}{h}{m}{s}. |
 | **`refresh_s`**<br>*Type:* `float`<br>*Default:* `1.0` | Seconds between value recomputes (the text is repainted every frame). |
+| **`target`**<br>*Type:* `str`<br>*Default:* *(required)* | Target datetime (ISO 8601, e.g. '2026-12-31T23:59'). |
 
 ## `logo`
 
@@ -123,12 +123,12 @@ Restrictions: needs a text-capable mode.
 <!-- table: fields -->
 | Parameter | Description |
 |---|---|
-| **`file`**<br>*Type:* `str`<br>*Default:* *(required)* | Path to a .txt file of PETSCII art (one screen row per line). |
-| **`corner`**<br>*Type:* `str \| None`<br>*Default:* `None` | Corner to anchor the block (mutually exclusive with row/col). |
-| **`row`**<br>*Type:* `int \| None`<br>*Default:* `None` | Explicit top row (use with col instead of corner). |
-| **`col`**<br>*Type:* `int \| None`<br>*Default:* `None` | Explicit left column (use with row instead of corner). |
-| **`fg_color`**<br>*Type:* `str`<br>*Default:* `'white'` | Art color (C64 color name). |
 | **`bg_color`**<br>*Type:* `str`<br>*Default:* `'black'` | Background color, or 'none' to leave the scene showing through. |
+| **`col`**<br>*Type:* `int \| None`<br>*Default:* `None` | Explicit left column (use with row instead of corner). |
+| **`corner`**<br>*Type:* `str \| None`<br>*Default:* `None` | Corner to anchor the block (mutually exclusive with row/col). |
+| **`fg_color`**<br>*Type:* `str`<br>*Default:* `'white'` | Art color (C64 color name). |
+| **`file`**<br>*Type:* `str`<br>*Default:* *(required)* | Path to a .txt file of PETSCII art (one screen row per line). |
+| **`row`**<br>*Type:* `int \| None`<br>*Default:* `None` | Explicit top row (use with col instead of corner). |
 
 ## `marquee`
 
@@ -147,11 +147,11 @@ Restrictions: needs a text-capable mode.
 <!-- table: fields -->
 | Parameter | Description |
 |---|---|
-| **`text`**<br>*Type:* `str`<br>*Default:* `'C64CAST'` | The message to scroll continuously. |
+| **`bg_color`**<br>*Type:* `str`<br>*Default:* `'black'` | Background color (C64 color name). |
+| **`fg_color`**<br>*Type:* `str`<br>*Default:* `'yellow'` | Text color (C64 color name). |
 | **`row`**<br>*Type:* `int`<br>*Default:* `0` | Screen row (0..24) the ticker scrolls along. |
 | **`speed_cells_per_s`**<br>*Type:* `float`<br>*Default:* `3.0` | Scroll speed in character cells per second. |
-| **`fg_color`**<br>*Type:* `str`<br>*Default:* `'yellow'` | Text color (C64 color name). |
-| **`bg_color`**<br>*Type:* `str`<br>*Default:* `'black'` | Background color (C64 color name). |
+| **`text`**<br>*Type:* `str`<br>*Default:* `'C64CAST'` | The message to scroll continuously. |
 
 ## `network`
 
@@ -170,10 +170,10 @@ Restrictions: needs a text-capable mode.
 <!-- table: fields -->
 | Parameter | Description |
 |---|---|
-| **`items`**<br>*Type:* `list \| None`<br>*Default:* `None` | Which lines to show, any of: 'ip', 'hostname', 'ping'. |
+| **`bg_color`**<br>*Type:* `str`<br>*Default:* `'black'` | Cell background color, or 'none' to leave the scene showing through. |
 | **`corner`**<br>*Type:* `str`<br>*Default:* `'bottom-right'` | Screen corner to anchor the text (top-left/top-right/bottom-left/bottom-right). |
 | **`fg_color`**<br>*Type:* `str`<br>*Default:* `'light gray'` | Text color (C64 color name). |
-| **`bg_color`**<br>*Type:* `str`<br>*Default:* `'black'` | Cell background color, or 'none' to leave the scene showing through. |
+| **`items`**<br>*Type:* `list \| None`<br>*Default:* `None` | Which lines to show, any of: 'ip', 'hostname', 'ping'. |
 | **`refresh_s`**<br>*Type:* `float`<br>*Default:* `5.0` | Seconds between value recomputes (the text is repainted every frame). |
 
 ## `obs_status`
@@ -193,14 +193,14 @@ Restrictions: needs a text-capable mode.
 <!-- table: fields -->
 | Parameter | Description |
 |---|---|
-| **`host`**<br>*Type:* `str`<br>*Default:* `'localhost'` | OBS WebSocket host. |
-| **`port`**<br>*Type:* `int`<br>*Default:* `4455` | OBS WebSocket port. |
-| **`password`**<br>*Type:* `str`<br>*Default:* `''` | OBS WebSocket password (if auth is enabled). |
-| **`show_dropped`**<br>*Type:* `bool`<br>*Default:* `True` | Append the dropped-frame count to the status line. |
+| **`bg_color`**<br>*Type:* `str`<br>*Default:* `'black'` | Cell background color, or 'none' to leave the scene showing through. |
 | **`corner`**<br>*Type:* `str`<br>*Default:* `'bottom-right'` | Screen corner to anchor the text (top-left/top-right/bottom-left/bottom-right). |
 | **`fg_color`**<br>*Type:* `str`<br>*Default:* `'light green'` | Text color (C64 color name). |
-| **`bg_color`**<br>*Type:* `str`<br>*Default:* `'black'` | Cell background color, or 'none' to leave the scene showing through. |
+| **`host`**<br>*Type:* `str`<br>*Default:* `'localhost'` | OBS WebSocket host. |
+| **`password`**<br>*Type:* `str`<br>*Default:* `''` | OBS WebSocket password (if auth is enabled). |
+| **`port`**<br>*Type:* `int`<br>*Default:* `4455` | OBS WebSocket port. |
 | **`refresh_s`**<br>*Type:* `float`<br>*Default:* `2.0` | Seconds between value recomputes (the text is repainted every frame). |
+| **`show_dropped`**<br>*Type:* `bool`<br>*Default:* `True` | Append the dropped-frame count to the status line. |
 
 ## `rss`
 
@@ -220,14 +220,14 @@ Restrictions: needs a text-capable mode.
 <!-- table: fields -->
 | Parameter | Description |
 |---|---|
-| **`url`**<br>*Type:* `str`<br>*Default:* *(required)* | RSS/Atom feed URL to fetch. |
-| **`row`**<br>*Type:* `int`<br>*Default:* `0` | Screen row (0..24) the ticker scrolls along. |
+| **`bg_color`**<br>*Type:* `str`<br>*Default:* `'black'` | Background color (C64 color name). |
+| **`fg_color`**<br>*Type:* `str`<br>*Default:* `'light green'` | Text color (C64 color name). |
 | **`max_items`**<br>*Type:* `int`<br>*Default:* `10` | Maximum number of headlines to include in the ticker. |
 | **`refresh_minutes`**<br>*Type:* `float`<br>*Default:* `15.0` | Minutes between background feed fetches. |
-| **`speed_cells_per_s`**<br>*Type:* `float`<br>*Default:* `3.0` | Scroll speed in character cells per second. |
+| **`row`**<br>*Type:* `int`<br>*Default:* `0` | Screen row (0..24) the ticker scrolls along. |
 | **`separator`**<br>*Type:* `str`<br>*Default:* `'   *   '` | Text placed between consecutive headlines. |
-| **`fg_color`**<br>*Type:* `str`<br>*Default:* `'light green'` | Text color (C64 color name). |
-| **`bg_color`**<br>*Type:* `str`<br>*Default:* `'black'` | Background color (C64 color name). |
+| **`speed_cells_per_s`**<br>*Type:* `float`<br>*Default:* `3.0` | Scroll speed in character cells per second. |
+| **`url`**<br>*Type:* `str`<br>*Default:* *(required)* | RSS/Atom feed URL to fetch. |
 
 ## `scrolling_text`
 
@@ -247,10 +247,10 @@ Restrictions: needs a text-capable mode.
 <!-- table: fields -->
 | Parameter | Description |
 |---|---|
+| **`bg_color`**<br>*Type:* `str`<br>*Default:* `'black'` | Background color (C64 color name). |
 | **`messages`**<br>*Type:* `list`<br>*Default:* *(required)* | List of message strings (or {text, color, style, ...} tables) to cycle through. |
 | **`row`**<br>*Type:* `int`<br>*Default:* `24` | Screen row (0..24) to scroll along. |
 | **`speed_cells_per_s`**<br>*Type:* `float`<br>*Default:* `6.0` | Scroll speed in character cells per second. |
-| **`bg_color`**<br>*Type:* `str`<br>*Default:* `'black'` | Background color (C64 color name). |
 
 ## `spectrum_bitmap`
 
@@ -269,9 +269,9 @@ Restrictions: only on `mhires`.
 <!-- table: fields -->
 | Parameter | Description |
 |---|---|
-| **`placement`**<br>*Type:* `str`<br>*Default:* `'bottom'` | Where the bars sit: 'bottom', 'center', or 'split'. |
-| **`height_frac`**<br>*Type:* `float`<br>*Default:* `0.5` | Fraction of screen height a full-energy bar reaches. |
 | **`gain`**<br>*Type:* `float`<br>*Default:* `1.0` | Multiplier applied to band magnitudes before bar height. |
+| **`height_frac`**<br>*Type:* `float`<br>*Default:* `0.5` | Fraction of screen height a full-energy bar reaches. |
+| **`placement`**<br>*Type:* `str`<br>*Default:* `'bottom'` | Where the bars sit: 'bottom', 'center', or 'split'. |
 
 ## `spectrum_petscii`
 
@@ -290,9 +290,9 @@ Restrictions: needs a PETSCII-compatible mode.
 <!-- table: fields -->
 | Parameter | Description |
 |---|---|
-| **`placement`**<br>*Type:* `str`<br>*Default:* `'center'` | Where the bars sit: 'bottom', 'center', or 'split'. |
-| **`height_rows`**<br>*Type:* `int`<br>*Default:* `12` | Height of the bar strip in character rows. |
 | **`gain`**<br>*Type:* `float`<br>*Default:* `1.0` | Multiplier applied to band magnitudes before bar height. |
+| **`height_rows`**<br>*Type:* `int`<br>*Default:* `12` | Height of the bar strip in character rows. |
+| **`placement`**<br>*Type:* `str`<br>*Default:* `'center'` | Where the bars sit: 'bottom', 'center', or 'split'. |
 
 ## `weather`
 
@@ -311,12 +311,12 @@ Restrictions: needs a text-capable mode.
 <!-- table: fields -->
 | Parameter | Description |
 |---|---|
-| **`provider`**<br>*Type:* `str`<br>*Default:* `'open-meteo'` | Weather source: 'open-meteo' or 'wttr.in'. |
-| **`lat`**<br>*Type:* `float \| None`<br>*Default:* `None` | Latitude (open-meteo; with lon). |
-| **`lon`**<br>*Type:* `float \| None`<br>*Default:* `None` | Longitude (open-meteo; with lat). |
-| **`location`**<br>*Type:* `str \| None`<br>*Default:* `None` | Location name (wttr.in; alternative to lat/lon). |
-| **`units`**<br>*Type:* `str`<br>*Default:* `'F'` | Temperature units: 'F' or 'C'. |
+| **`bg_color`**<br>*Type:* `str`<br>*Default:* `'black'` | Cell background color, or 'none' to leave the scene showing through. |
 | **`corner`**<br>*Type:* `str`<br>*Default:* `'top-left'` | Screen corner to anchor the text (top-left/top-right/bottom-left/bottom-right). |
 | **`fg_color`**<br>*Type:* `str`<br>*Default:* `'light blue'` | Text color (C64 color name). |
-| **`bg_color`**<br>*Type:* `str`<br>*Default:* `'black'` | Cell background color, or 'none' to leave the scene showing through. |
+| **`lat`**<br>*Type:* `float \| None`<br>*Default:* `None` | Latitude (open-meteo; with lon). |
+| **`location`**<br>*Type:* `str \| None`<br>*Default:* `None` | Location name (wttr.in; alternative to lat/lon). |
+| **`lon`**<br>*Type:* `float \| None`<br>*Default:* `None` | Longitude (open-meteo; with lat). |
+| **`provider`**<br>*Type:* `str`<br>*Default:* `'open-meteo'` | Weather source: 'open-meteo' or 'wttr.in'. |
 | **`refresh_minutes`**<br>*Type:* `float`<br>*Default:* `10.0` | Minutes between background weather polls. |
+| **`units`**<br>*Type:* `str`<br>*Default:* `'F'` | Temperature units: 'F' or 'C'. |

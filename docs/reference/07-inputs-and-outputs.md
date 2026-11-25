@@ -408,11 +408,11 @@ With `[control].enabled` and the `control` extra, an HTTP server runs on
 
 | Route | Does |
 |---|---|
-| `GET /status` | The current scene and index, whether it is paused, and the link's write latency |
-| `GET /scenes` | The playlist, with each scene's duration and which one is live |
 | `POST /pause`, `/resume`, `/skip` | Exactly what the keyboard does |
-| `POST /reload` | Re-read the configuration from disk and rebuild the scenes at the next scene boundary |
 | `GET /perf` | The performance console |
+| `POST /reload` | Re-read the configuration from disk and rebuild the scenes at the next scene boundary |
+| `GET /scenes` | The playlist, with each scene's duration and which one is live |
+| `GET /status` | The current scene and index, whether it is paused, and the link's write latency |
 
 `/reload` is how a show is edited while it runs: save the file, post, and the new
 scenes take effect at the next boundary rather than mid-scene.
@@ -555,34 +555,34 @@ shows those routes answer `503`: the machine is idle, not broken.
 
 | Route | Does |
 |---|---|
-| `GET /api/session` | Where the host is: `idle`, `starting`, `running`, `stopping` or `error`, with the current systems, the last error and a tail of the log |
-| `POST /api/session/start` | Build and run a configuration — the launched one, or the `config` named in the body |
-| `POST /api/session/stop` | Bring the running show down and put the machine back |
-| `POST /api/session/switch` | Stop, wait for the hardware, and start again — re-reading the file |
-| `POST /api/session/reload` | The same reload the control plane offers |
-| `POST /api/session/live-tune` | Keep (or drop) the knob changes made since the show started |
-| `GET /api/introspect` | Every configuration section, scene type, overlay, display mode and live target, as JSON |
-| `GET /api/update` | The last recorded `c64cast --check-for-updates --write-state` check — never queries PyPI itself |
-| `GET /api/screen` | Which systems can show a picture, without starting anything |
-| `GET /api/screen.png` | One still frame of the machine's actual screen |
-| `GET /api/screen/stream` | The screen as a live `multipart/x-mixed-replace` stream, which one `<img>` renders with no script |
-| `POST /api/viewer-link` | Mint (or return) the read-only login link to hand somebody |
-| `GET /api/library` | Favorites and recently-launched configurations |
-| `POST /api/library/favorites` | Star or unstar a configuration |
+| `GET /` | The console itself — the browser interface to every route in this table |
 | `GET /api/configs` | The configurations the host can see, and the roots they live under |
 | `POST /api/configs` | Create a new configuration — a copy of another readable one, or a minimal starter |
 | `GET /api/configs/{path}` | One configuration: its text, its settings with a "left at the default" flag on each, and any stray keys |
 | `PUT /api/configs/{path}` | Replace it — validated first, and the previous text kept |
 | `PATCH /api/configs/{path}` | Change named settings and let the host compose and write the file |
 | `DELETE /api/configs/{path}` | Delete it — refused for a read-only root or the config currently running |
-| `POST /api/configs/{path}/validate` | Check text without saving it — or, with no text, check the file as it stands on disk |
 | `POST /api/configs/{path}/scenes` | Add a scene — blank, or a copy of an existing one |
-| `DELETE /api/configs/{path}/scenes/{index}` | Remove a scene — refused for the last one |
 | `PATCH /api/configs/{path}/scenes/{index}` | Reorder a scene |
+| `DELETE /api/configs/{path}/scenes/{index}` | Remove a scene — refused for the last one |
+| `POST /api/configs/{path}/validate` | Check text without saving it — or, with no text, check the file as it stands on disk |
+| `GET /api/introspect` | Every configuration section, scene type, overlay, display mode and live target, as JSON |
+| `GET /api/library` | Favorites and recently-launched configurations |
+| `POST /api/library/favorites` | Star or unstar a configuration |
 | `GET /api/media` | Media a `file =` field could name — browsable by kind, with an optional search |
 | `PUT /api/media/{name}` | Upload a file, streamed straight to disk |
+| `GET /api/screen` | Which systems can show a picture, without starting anything |
+| `GET /api/screen.png` | One still frame of the machine's actual screen |
+| `GET /api/screen/stream` | The screen as a live `multipart/x-mixed-replace` stream, which one `<img>` renders with no script |
+| `GET /api/session` | Where the host is: `idle`, `starting`, `running`, `stopping` or `error`, with the current systems, the last error and a tail of the log |
+| `POST /api/session/live-tune` | Keep (or drop) the knob changes made since the show started |
+| `POST /api/session/reload` | The same reload the control plane offers |
+| `POST /api/session/start` | Build and run a configuration — the launched one, or the `config` named in the body |
+| `POST /api/session/stop` | Bring the running show down and put the machine back |
+| `POST /api/session/switch` | Stop, wait for the hardware, and start again — re-reading the file |
+| `GET /api/update` | The last recorded `c64cast --check-for-updates --write-state` check — never queries PyPI itself |
+| `POST /api/viewer-link` | Mint (or return) the read-only login link to hand somebody |
 | `WS /api/ws` | Live state: the performance payload, the session state, and new log lines as they happen |
-| `GET /` | The console itself — the browser interface to all of the above |
 
 The configuration is re-read from disk on every start, so editing the file and
 posting `start` again runs the edit — no restart of the host. Starting takes
@@ -1010,14 +1010,14 @@ The mapping is a deliberate pun on WLED's own vocabulary:
 
 | WLED control | Reaches |
 |---|---|
-| Power | Pause and resume |
 | Brightness | A real screen dim, all the way to black |
-| Effect | The scene — the playlist is the effect list |
-| Palette | The palette mode |
 | Color | A forced palette of the colors you pick |
-| Speed / Intensity | The current scene's live parameters |
-| Presets | Save and recall the whole look |
+| Effect | The scene — the playlist is the effect list |
 | One segment per system | An ensemble, in order |
+| Palette | The palette mode |
+| Power | Pause and resume |
+| Presets | Save and recall the whole look |
+| Speed / Intensity | The current scene's live parameters |
 
 Brightness is deliberately **decoupled from power**: `bri = 0` dims fully to
 black but does not pause. Coupling them would mean that nudging a slider through

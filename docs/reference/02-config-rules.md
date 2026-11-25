@@ -220,10 +220,10 @@ query parameters:
 
 | Parameter | On | Sets | Default |
 |---|---|---|---|
-| `dma_port` | a C64U target | `[ultimate64].dma_port` | `64` |
-| `tcp_port` | a TCP `tr://` | `[teensyrom].tcp_port` | `2112` |
 | `baud` | a serial `tr://` | `[teensyrom].baud` | `2000000` |
+| `dma_port` | a C64U target | `[ultimate64].dma_port` | `64` |
 | `storage` | any `tr://` | `[teensyrom].storage` | `"sd"` |
+| `tcp_port` | a TCP `tr://` | `[teensyrom].tcp_port` | `2112` |
 
 `storage` is where the TeensyROM+ stages the helper programs c64cast uploads —
 its SD card, or a USB stick.
