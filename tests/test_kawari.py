@@ -537,8 +537,11 @@ class ShotPushTest(unittest.TestCase):
         self.bus.cue()
         self.writer.go()
         self.writer.abort()
+        later = self.machine.copy()
+        later[3] = (0, 0, 0)
+        self.assertTrue(self.writer.load(later, lambda: False))
         self.bus.commit()
-        self.assertEqual(self.bus.copies, 0)
+        self.assertEqual(self.bus.copies, 0, "the withdrawn cue copied the next shot's table")
         self.assertEqual(self._cue_state(), bytes(2))
 
     def test_until_the_ack_the_record_names_both_tables(self):
