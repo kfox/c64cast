@@ -397,8 +397,9 @@ colors, so the two answer slightly different questions.
 ## Choosing the Sixteen — `hardware_palette`
 
 `force_palette` and everything before it choose *among* the machine's sixteen
-colors. An Ultimate 64 on firmware 3.15a or newer, or a C64 Ultimate on 1.2.1 or
-newer, lets c64cast change the sixteen themselves, for the length of a scene:
+colors. An Ultimate 64 on firmware 3.15a or newer, a C64 Ultimate on 1.2.1 or
+newer, or a C64 whose VIC-II is a Kawari with a configurable RGB palette lets
+c64cast change the sixteen themselves, for the length of a scene:
 
 ```toml
 [color]
@@ -406,7 +407,7 @@ hardware_palette = "source"   # "off" (default) | "auto"
 ```
 
 With `"source"`, a `video` or `slideshow` scene fits the palette to its own
-content before it paints, pushes it to the Ultimate, and points the whole
+content before it paints, pushes it to the machine, and points the whole
 pipeline at it — the nearest-color search, `dither`, `color_match` and the
 fades all aim at exactly what the machine now emits. Black, white and the three
 grays stay the machine's own, since fades end on black and cards and overlays
@@ -420,10 +421,10 @@ error falls to about a third of what the Ultimate's own table gives.
 | | |
 |---|---|
 | **Scenes** | `video` (from the pre-scan, so a video with it on always pre-scans) and `slideshow` (per image). Other scenes show the machine's palette |
-| **When it is pushed** | At scene start, and at each slideshow image. About half a second per push, so it is per scene, never per frame |
-| **Restored** | Before the next scene that does not push colors of its own sets up, and at exit, to the palette the machine shows after c64cast's startup reset — its configured palette, a custom `.vpl` included. A C64 reset during a scene reverts the machine to its configured palette, so c64cast pushes the scene's palette again after every reset it issues |
+| **When it is pushed** | At scene start, and at each slideshow image. About half a second per push on an Ultimate and a few hundredths of a second on a Kawari, so it is per scene, never per frame |
+| **Restored** | Before the next scene that does not push colors of its own sets up, and at exit, to the palette the machine showed when the run started — on an Ultimate its configured palette after c64cast's startup reset, a custom `.vpl` included. A C64 reset during a scene reverts an Ultimate to its configured palette, so c64cast pushes the scene's palette again after every reset it issues. A Kawari keeps its palette through a reset, and through a run that ends without restoring it: the next run notices the colors it left and puts the palette that run found back first. Nothing is ever saved to the Kawari's EEPROM |
 | **Not with** | `force_palette`, which also re-chooses a scene's colors, or a `flicker_tolerance` other than `"off"`, whose blends are measured against the machine's fixed palette. The configuration is refused, in a performance clip's `color` too |
-| **Needs** | An Ultimate 64 on firmware 3.15a or newer or a C64 Ultimate on 1.2.1 or newer, and the Command Interface on. A C64 Ultimate on 1.1.0, older firmware, any other machine, an ensemble, and `--skip-probe` all render exactly as without it, after one warning saying why |
+| **Needs** | An Ultimate 64 on firmware 3.15a or newer or a C64 Ultimate on 1.2.1 or newer, with the Command Interface on; or a C64 whose VIC-II is a Kawari whose capabilities include a configurable RGB palette. A C64 Ultimate on 1.1.0, older firmware, any other machine, an ensemble, and `--skip-probe` all render exactly as without it, after one warning saying why. On a Kawari, `hardware_palette_shots` does nothing yet: a video keeps one palette |
 
 Set it per scene in a `[scenes.color]` sub-table to use it on one video and not
 the next.

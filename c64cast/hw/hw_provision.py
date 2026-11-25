@@ -1012,16 +1012,51 @@ def live_palette_name(table: Sequence[Sequence[int]], source: str = "u64") -> st
     return f"{source}-live:{digest[:6]}"
 
 
-def read_kawari_palette(api: object) -> tuple[str, tuple[tuple[int, int, int], ...]] | None:
-    """``(chip model, BGR table)`` when the C64's VIC is a Kawari that answers,
-    else None (a stock VIC-II, or a backend that can't read memory)."""
-    if not getattr(getattr(api, "profile", None), "supports_read", False):
-        return None
-    answer = kawari.read_palette(api)  # type: ignore[arg-type]
-    if answer is None:
-        return None
-    model, rgb = answer
-    return model, tuple((b, g, r) for r, g, b in rgb)
+def detect_kawari(cfg: Config, api: object) -> kawari.Kawari | None:
+    """The C64's VIC-II Kawari, asked once per run and kept as `api.kawari`
+    for the palette and anything else that drives it. None for a stock
+    VIC-II, under --skip-probe, on an Ultimate 64 (whose VIC is its own FPGA
+    core) and on a backend that cannot read memory."""
+    profile = getattr(api, "profile", None)
+    found = None
+    if (
+        not cfg.debug.skip_probe
+        and profile is not None
+        and not getattr(profile, "supports_system_mode", False)
+        and getattr(profile, "supports_read", False)
+    ):
+        found = kawari.probe(api)  # type: ignore[arg-type]
+    if found is not None and found.info.configurable_rgb:
+        found = _undo_a_dead_runs_palette(found, api)
+    if found is not None:
+        info = found.info
+        log.info(
+            "VIC-II Kawari: %s, firmware %d.%d, variant %r, capabilities $%02X",
+            info.model,
+            *info.version,
+            info.variant,
+            info.cap_lo,
+        )
+        api.kawari = found  # type: ignore[attr-defined]
+    return found
+
+
+def _undo_a_dead_runs_palette(found: kawari.Kawari, api: object) -> kawari.Kawari:
+    """`found`, unless a run that ended early left its colors on it; then a
+    `Kawari` whose palette is the one that run found, now back on the machine,
+    so `host_palette = "auto"` and `[color].hardware_palette` both take it as
+    the machine's own."""
+    from dataclasses import replace
+
+    from c64cast.app.paths import kawari_palette_record_path
+
+    from .hardware_palette import put_back_a_dead_runs_kawari_palette
+
+    own = put_back_a_dead_runs_kawari_palette(found, kawari_palette_record_path())
+    if own is None:
+        return found
+    rgb = tuple((int(r), int(g), int(b)) for b, g, r in own)
+    return kawari.Kawari(api, replace(found.info, palette_rgb=rgb))  # type: ignore[arg-type]
 
 
 def resolve_palette(cfg: Config, api: object) -> None:
@@ -1045,6 +1080,7 @@ def resolve_palette(cfg: Config, api: object) -> None:
     from c64cast.video.palette import C64_PALETTE_BGR, active_host_palette_name, set_host_palette
 
     global _palette_resolved
+    detect_kawari(cfg, api)
     name, table = _resolve_palette_table(cfg, api)
     if _palette_resolved:
         # The active palette is process-wide (see `palette.set_host_palette`),
@@ -1091,11 +1127,15 @@ def _resolve_palette_table(cfg: Config, api: object) -> tuple[str, Sequence[Sequ
         # Every other machine in reach is a real C64 — the Ultimate II+ and the
         # TeensyROM+ both drive one, and neither has a palette of its own — but
         # its VIC may be a Kawari, which can say what it drives.
-        kawari_live = read_kawari_palette(api)
-        if kawari_live is not None:
-            model, table = kawari_live
+        found: kawari.Kawari | None = getattr(api, "kawari", None)
+        if found is not None:
+            table = tuple((b, g, r) for r, g, b in found.info.palette_rgb)
             name = live_palette_name(table, source="kawari")
-            log.info("[hardware].host_palette = auto -> %s (live, Kawari as %s)", name, model)
+            log.info(
+                "[hardware].host_palette = auto -> %s (live, Kawari as %s)",
+                name,
+                found.info.model,
+            )
             return name, table
         log.debug("[hardware].host_palette = auto -> pepto (real VIC-II assumed)")
         return "pepto", HOST_PALETTES["pepto"]

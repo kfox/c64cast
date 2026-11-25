@@ -2062,12 +2062,14 @@ class ColorCfg:
             "help": "Re-choose the machine's own 16 colors for each scene. "
             "'source' fits 11 of them to the scene's content (the black, "
             "white and three grays stay the machine's) and pushes them to the "
-            "Ultimate before the scene paints; quantization, dither and fades "
+            "machine before the scene paints; quantization, dither and fades "
             "then aim at exactly those colors, and the machine's palette is "
             "put back before the next scene that does not use it, and at exit. "
             "Video and slideshow scenes only, "
             "since they can see their content first. Needs an Ultimate 64 on "
-            "firmware 3.15a or newer or a C64 Ultimate on 1.2.1 or newer; elsewhere it is skipped with a warning. "
+            "firmware 3.15a or newer, a C64 Ultimate on 1.2.1 or newer, or a "
+            "C64 whose VIC-II is a Kawari with a configurable RGB palette; "
+            "elsewhere it is skipped with a warning. "
             "Cannot be combined with force_palette or flicker_tolerance. "
             "'auto' is 'source' wherever it can be: it is quietly off on a "
             "machine that cannot push colors and on a scene using "
@@ -2084,7 +2086,7 @@ class ColorCfg:
             "buffer and change on its first frame. A new set also comes where "
             "the picture drifts away from the current one, as in a dissolve. "
             "Shots shorter than 1.3 s keep the colors of the shot before. Video "
-            "scenes only."
+            "scenes only; on a Kawari a video keeps one set of colors."
         },
     )
     dither: str = field(

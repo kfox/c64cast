@@ -1703,7 +1703,7 @@ class VideoScene(MediaFileMixin, Scene):
                 self.display_mode.set_color_map(cmap)
                 if self._hw_palette is not None:
                     _push_source_palette(self, self._hw_palette, sampled)
-                    if c.hardware_palette_shots:
+                    if c.hardware_palette_shots and self._hw_palette.follows_shots:
                         self._start_shot_pushes(self._hw_palette)
                 if fit is not None:
                     log.info("video: auto-fit %s", fit)

@@ -6,17 +6,19 @@ See docs/architecture/video-color.md#hardware_palettepy--pushing-a-scenes-own-16
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 import threading
 import time
 from collections import deque
 from collections.abc import Callable
+from pathlib import Path
 from typing import TYPE_CHECKING, Protocol, cast
 
 import numpy as np
 
 from c64cast.app.config import ColorCfg, Config, scene_and_clip_cfgs, scene_color
-from c64cast.hw import uci
+from c64cast.hw import kawari, uci
 
 if TYPE_CHECKING:
     from c64cast.video.palette_shots import PaletteShot
@@ -49,6 +51,9 @@ class PaletteWriter(Protocol):
     load_time_s: float
     #: How long after `go` the machine is ready for `ack`.
     ack_delay_s: float
+    #: Whether `load`, `go`, `ack` and `abort` work, so a video's palette can
+    #: follow its shots.
+    follows_shots: bool
     #: Why `read_machine` returned None, for the warning.
     unreadable: str
 
@@ -90,6 +95,7 @@ class UltimatePaletteWriter:
     channel_bits = 8
     load_time_s = 1.2
     ack_delay_s = uci.ACK_DELAY_S
+    follows_shots = True
     unreadable = (
         "this Ultimate did not answer the UCI palette read (firmware before "
         "3.15a, a C64 Ultimate on 1.1.0, or the Command Interface turned off)"
@@ -128,6 +134,133 @@ class UltimatePaletteWriter:
 
     def abort(self) -> None:
         uci.abort(self._api)
+
+
+class KawariPaletteWriter:
+    """A VIC-II Kawari with a configurable RGB palette, through its overlay
+    registers. Every push is read back, because the TeensyROM+ link absorbs a
+    failed write rather than raising.
+
+    Its palette survives a C64 reset, so there are no resets to watch, and it
+    survives a run that dies too. Each push therefore records what the
+    machine shows and the palette the run found (`kawari_palette_record_path`),
+    and the next run's `put_back_a_dead_runs_kawari_palette` acts on it."""
+
+    device = "the Kawari"
+    channel_bits = 6
+    load_time_s = 0.05
+    ack_delay_s = 0.0
+    follows_shots = False
+    unreadable = "the Kawari did not take back the palette a run that ended early found"
+
+    def __init__(self, chip: kawari.Kawari, record: Path) -> None:
+        self._chip = chip
+        self._record = record
+        self._machine = _kawari_bgr(chip)
+
+    def read_machine(self) -> np.ndarray | None:
+        # A record that still matches means the put-back at detection failed:
+        # what the Kawari shows is a dead run's, and recording it as the
+        # machine's would overwrite the only copy of the real one.
+        if _left_by_a_run(self._record, self._machine) is not None:
+            return None
+        return self._machine.copy()
+
+    def watch_resets(self, callback: Callable[[], None]) -> None:
+        pass
+
+    def unwatch_resets(self, callback: Callable[[], None]) -> None:
+        pass
+
+    def push(self, table_bgr: np.ndarray) -> bool:
+        table = np.asarray(table_bgr, dtype=np.uint8).reshape(16, 3)
+        if not _write_kawari(self._chip, table):
+            log.debug("hardware_palette: the Kawari's palette did not read back as written")
+            return False
+        self._note(table)
+        return True
+
+    def load(self, table_bgr: np.ndarray, stop: Callable[[], bool]) -> bool:
+        raise NotImplementedError("the Kawari writer does not follow shots")
+
+    def go(self) -> None:
+        raise NotImplementedError("the Kawari writer does not follow shots")
+
+    def ack(self) -> None:
+        raise NotImplementedError("the Kawari writer does not follow shots")
+
+    def abort(self) -> None:
+        raise NotImplementedError("the Kawari writer does not follow shots")
+
+    def _note(self, shows: np.ndarray) -> None:
+        from c64cast.control.transport import atomic_write_text
+
+        if np.array_equal(shows, self._machine):
+            _forget(self._record)
+            return
+        record = {"machine": self._machine.tolist(), "shows": shows.tolist()}
+        try:
+            self._record.parent.mkdir(parents=True, exist_ok=True)
+            atomic_write_text(self._record, json.dumps(record))
+        except OSError as e:
+            log.warning(
+                "hardware_palette: could not record the Kawari's palette in %s (%s); "
+                "a run that ends early will leave its colors on the machine",
+                self._record,
+                e,
+            )
+
+
+def put_back_a_dead_runs_kawari_palette(chip: kawari.Kawari, record: Path) -> np.ndarray | None:
+    """The palette (BGR) a run that ended early found on the Kawari, once the
+    Kawari shows it again; None when no run left its colors there, or when the
+    Kawari would not take it back, in which case the record stays."""
+    left = _left_by_a_run(record, _kawari_bgr(chip))
+    if left is None:
+        return None
+    log.warning(
+        "hardware_palette: the Kawari still shows the colors a run that "
+        "ended early pushed; putting back the palette that run found"
+    )
+    if not _write_kawari(chip, left):
+        log.warning("hardware_palette: the Kawari did not take that palette back")
+        return None
+    _forget(record)
+    return left
+
+
+def _kawari_bgr(chip: kawari.Kawari) -> np.ndarray:
+    rgb = np.asarray(chip.info.palette_rgb, dtype=np.uint8).reshape(16, 3)
+    return rgb[:, ::-1].copy()
+
+
+def _write_kawari(chip: kawari.Kawari, table_bgr: np.ndarray) -> bool:
+    channels = [kawari.to_6bit(int(v)) for row in table_bgr for v in row[::-1]]
+    return chip.write_palette(channels) == tuple(channels)
+
+
+def _left_by_a_run(record: Path, found: np.ndarray) -> np.ndarray | None:
+    try:
+        saved = json.loads(record.read_text())
+        shows = np.asarray(saved["shows"], dtype=np.uint8).reshape(16, 3)
+        machine = np.asarray(saved["machine"], dtype=np.uint8).reshape(16, 3)
+    except FileNotFoundError:
+        return None
+    except (OSError, ValueError, KeyError, TypeError):
+        log.debug("hardware_palette: unreadable %s ignored", record, exc_info=True)
+        return None
+    if not np.array_equal(shows, found):
+        # The machine was power-cycled, or its palette changed, since.
+        _forget(record)
+        return None
+    return machine
+
+
+def _forget(record: Path) -> None:
+    try:
+        record.unlink(missing_ok=True)
+    except OSError as e:
+        log.debug("hardware_palette: could not remove %s (%s)", record, e)
 
 
 class HardwarePalette:
@@ -181,6 +314,10 @@ class HardwarePalette:
     @property
     def ack_delay_s(self) -> float:
         return self._writer.ack_delay_s
+
+    @property
+    def follows_shots(self) -> bool:
+        return self._writer.follows_shots
 
     def show(self, table_bgr: np.ndarray, scene: str) -> bool:
         """Push `table_bgr` and point the quantizer at it. False when the
@@ -579,7 +716,10 @@ def provision_hardware_palette(
     skip = None
     writer = _writer_for(api)
     if writer is None:
-        skip = "only an Ultimate 64 can change the colors it emits"
+        skip = (
+            "only an Ultimate 64, or a VIC-II Kawari with a configurable "
+            "palette, can change the colors it emits"
+        )
     elif cfg.debug.skip_probe:
         skip = "--skip-probe forbids reading the machine's palette first"
     elif is_ensemble:
@@ -612,10 +752,15 @@ def provision_hardware_palette(
 
 
 def _writer_for(api: object) -> PaletteWriter | None:
+    from c64cast.app.paths import kawari_palette_record_path
+
     from .api import Ultimate64API
 
     if isinstance(api, Ultimate64API) and api.profile.supports_system_mode:
         return UltimatePaletteWriter(api)
+    chip = getattr(api, "kawari", None)
+    if isinstance(chip, kawari.Kawari) and chip.info.configurable_rgb:
+        return KawariPaletteWriter(chip, kawari_palette_record_path())
     return None
 
 
