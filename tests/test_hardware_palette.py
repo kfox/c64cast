@@ -37,6 +37,7 @@ def _mock_control() -> mock.Mock:
     control.load_time_s = hp.UltimatePaletteWriter.load_time_s
     control.ack_delay_s = hp.UltimatePaletteWriter.ack_delay_s
     control.follows_shots = hp.UltimatePaletteWriter.follows_shots
+    control.cues_frames = hp.UltimatePaletteWriter.cues_frames
     return control
 
 

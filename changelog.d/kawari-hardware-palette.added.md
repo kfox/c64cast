@@ -6,6 +6,7 @@
   and puts the Kawari's own palette back first. A hires mode an earlier
   program left on is turned off at startup. Behind a TeensyROM+, on Kawari
   firmware 1.16 or newer, each shot of a video gets its own colors, as on an
-  Ultimate 64, and they change between frames rather than partway down the
-  picture; behind an Ultimate II+, or on older firmware, a video keeps one
-  palette.
+  Ultimate 64, and they change with the shot's first frame, in the same
+  commit as the picture, in a double-buffered bitmap display mode; behind an
+  Ultimate II+, in other display modes, or on older firmware, a video keeps
+  one palette.

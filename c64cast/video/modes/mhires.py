@@ -686,7 +686,15 @@ class MultiHiresDisplayMode(BitmapDisplayMode):
             self._displayed_bank = target
             return
         if self.use_reu_staged:
-            push_mhires_via_reu(api, bitmap_bytes, screen_bytes, color_bytes, bg0, self._reu_slot)
+            push_mhires_via_reu(
+                api,
+                bitmap_bytes,
+                screen_bytes,
+                color_bytes,
+                bg0,
+                self._reu_slot,
+                cue=self._take_palette_cue(),
+            )
             self._reu_slot += 1
             return
         if self.double_buffer:

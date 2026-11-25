@@ -26,6 +26,7 @@ from c64cast.hw import uci
 from c64cast.hw.api import Ultimate64API
 from c64cast.video import palette
 from c64cast.video import palette_shots as ps
+from c64cast.video.modes import BitmapDisplayMode
 
 FPS = 25.0
 
@@ -206,6 +207,7 @@ class _FakeControl:
         self.calls: list[str] = []
         self.adopted: list[np.ndarray] = []
         self.load_ok = True
+        self.adopt_ok = True
 
     def load(self, table, stop) -> bool:
         self.calls.append("load")
@@ -214,7 +216,7 @@ class _FakeControl:
     def adopt(self, table) -> bool:
         self.calls.append("adopt")
         self.adopted.append(table)
-        return True
+        return self.adopt_ok
 
     def go(self) -> None:
         self.calls.append("go")
@@ -224,6 +226,41 @@ class _FakeControl:
 
     def abort(self) -> None:
         self.calls.append("abort")
+
+
+class CueingShotPusherTest(unittest.TestCase):
+    """A machine whose swap IRQ starts the copy is cued on the frame that
+    carries the push."""
+
+    def setUp(self):
+        self.control = _FakeControl()
+        self.pusher = hp.ShotPusher(
+            cast(hp.HardwarePalette, self.control), lambda: self.control.calls.append("cue")
+        )
+        self.pusher.start()
+        self.addCleanup(self.pusher.stop)
+
+    def test_the_frame_that_carries_the_push_is_cued_after_the_adopt(self):
+        shot = _shot(RED, 0.0)
+        self.pusher.ready(shot)
+        self.assertTrue(self.pusher.wait_loaded(5.0))
+        self.assertTrue(self.pusher.before_render(shot))
+        self.assertEqual(self.control.calls, ["load", "adopt", "cue"])
+
+    def test_a_frame_without_a_push_is_not_cued(self):
+        shot = _shot(RED, 0.0)
+        self.pusher.ready(shot)
+        self.pusher.wait_loaded(5.0)
+        self.assertFalse(self.pusher.before_render(None))
+        self.assertNotIn("cue", self.control.calls)
+
+    def test_a_refused_adopt_is_not_cued(self):
+        self.control.adopt_ok = False
+        shot = _shot(RED, 0.0)
+        self.pusher.ready(shot)
+        self.pusher.wait_loaded(5.0)
+        self.assertFalse(self.pusher.before_render(shot))
+        self.assertNotIn("cue", self.control.calls)
 
 
 def _shot(color, pts: float, **kw) -> ps.PaletteShot:
@@ -535,6 +572,28 @@ class VideoShotWiringTest(unittest.TestCase):
         self.scene.setup()
         self.assertIsNone(self.scene._shot_pusher)
         self.scene.teardown()
+
+    def test_a_kawari_is_handed_the_double_buffers_cue(self):
+        mode = mock.MagicMock(spec=BitmapDisplayMode)
+        mode.quantizer_input.side_effect = lambda img: img
+        mode.cues_palette_copies = True
+        self.scene.display_mode = mode
+        self.control.cues_frames = True
+        with self.assertLogs("c64cast.scenes.scenes", level="INFO"):
+            self.scene.setup()
+        self.addCleanup(self.scene.teardown)
+        pusher = self.scene._shot_pusher
+        assert pusher is not None
+        self.assertEqual(pusher._cue, mode.cue_palette_copy)
+
+    def test_a_kawari_without_a_double_buffer_keeps_one_palette(self):
+        self.control.cues_frames = True
+        self.mode.name = "petscii"
+        with self.assertLogs("c64cast.scenes.scenes", level="INFO") as cm:
+            self.scene.setup()
+        self.addCleanup(self.scene.teardown)
+        self.assertIsNone(self.scene._shot_pusher)
+        self.assertTrue(any("double-buffered" in r.getMessage() for r in cm.records))
 
     def test_a_machine_whose_writer_cannot_follow_shots_keeps_one_palette(self):
         self.control.follows_shots = False

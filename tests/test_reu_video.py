@@ -28,6 +28,7 @@ from _fakes import FakeAPI, quiet_logging
 from c64cast.app.config import Config, VideoCfg
 from c64cast.app.scene_factory import _build_display_mode
 from c64cast.audio.audio_handlers import REU_PUMP_BODY_SUBROUTINE_ADDR
+from c64cast.hw import kawari
 from c64cast.hw.api import Ultimate64API
 from c64cast.hw.backend import HardwareProfile
 from c64cast.hw.c64 import (
@@ -1529,6 +1530,12 @@ class BankSwapDispatcherExecutionTest(unittest.TestCase):
             self.mem.subscribe_to_write([REU.COMMAND], self._trigger)
             self.mem.subscribe_to_write([CIA2.PORT_A], self._register("dd00"))
             self.mem.subscribe_to_write([0xD021], self._register("d021"))
+            self.mem.subscribe_to_write(
+                range(kawari.VIDEO_MEM_1_ADDR, kawari.VIDEO_MEM_1_VAL + 1), self._kawari
+            )
+
+        def _kawari(self, address, value):
+            self.log.append(("kawari", address, value))
 
         def _store(self, address, value):
             n = self._writes.get(address, 0)
@@ -1560,8 +1567,11 @@ class BankSwapDispatcherExecutionTest(unittest.TestCase):
 
         sources: list[int]
 
-        def stage(self, slot, *, bg0=0):
-            """Write a tracker as the host does: one blob, ready flag last."""
+        def stage(self, slot, *, bg0=0, cue=False):
+            """Write a tracker as the host does: one blob, ready flag last,
+            with the palette cue ahead of it when `cue`."""
+            if cue:
+                self.mem[modes_irq.PALETTE_CUE_ADDR] = 1
             if self.mhires:
                 blob = bytearray(MHIRES_FRAME_TRACKER_LEN)
                 regs = (
@@ -1678,7 +1688,7 @@ class BankSwapDispatcherExecutionTest(unittest.TestCase):
                 self.assertIn(("dd00", CIA2.PORT_A_BANK_2, 0), log)
 
     def test_every_line_of_the_window_commits(self):
-        # [251, 255] and [0, 42] (mhires: 38), and the lines the 8-bit $D012
+        # [251, 255] and [0, 42] (mhires: 37), and the lines the 8-bit $D012
         # aliases there.
         for name, handler, mhires, _ in self.CASES[:2]:
             last = (
@@ -1756,6 +1766,60 @@ class BankSwapDispatcherExecutionTest(unittest.TestCase):
                 self.assertIn(("dd00", CIA2.PORT_A_BANK_2, 0), log)
                 banked = [s for s in sources if (s >> 13) & 3 != 2]
                 self.assertTrue(banked and all(self._slot(s) == 1 for s in banked))
+
+    PALETTE_COPY = [
+        ("kawari", kawari.VIDEO_MEM_1_ADDR, kawari.OVERLAY_PALETTE_RGB),
+        ("kawari", kawari.VIDEO_MEM_1_ADDR + 1, 0x00),
+        ("kawari", kawari.VIDEO_MEM_1_VAL, kawari.DMA_COPY_VMEM),
+    ]
+
+    def _cue_bytes(self, m):
+        return [int(m.mem[modes_irq._SNAPSHOT_CUE]), int(m.mem[modes_irq.PALETTE_CUE_ADDR])]
+
+    def _show(self, m):
+        """IRQs in the window until one commits; that IRQ's log."""
+        for _ in range(8):
+            _, log, _ = m.irq(line=self.IN_WINDOW)
+            if any(kind == "dd00" for kind, _, _ in log):
+                return log
+        self.fail("the frame never committed")
+
+    def test_a_cued_frame_starts_the_palette_copy_in_its_commit(self):
+        for name, handler, mhires, _ in self.CASES:
+            with self.subTest(mode=name):
+                m = self.Machine(self, handler, mhires=mhires)
+                m.stage(slot=0, cue=True)
+                _, log, _ = m.irq(line=self.OUT_OF_WINDOW)
+                self.assertNotIn("kawari", [kind for kind, _, _ in log])
+                self.assertEqual(self._cue_bytes(m), [1, 0], "the snapshot did not take the cue")
+                log = self._show(m)
+                kinds = [kind for kind, _, _ in log]
+                self.assertLess(kinds.index("dd00"), kinds.index("kawari"))
+                self.assertEqual([e for e in log if e[0] == "kawari"], self.PALETTE_COPY)
+                self.assertEqual(self._cue_bytes(m), [0, 0])
+
+    def test_an_uncued_frame_starts_no_copy(self):
+        for name, handler, mhires, _ in self.CASES:
+            with self.subTest(mode=name):
+                m = self.Machine(self, handler, mhires=mhires)
+                m.stage(slot=0)
+                m.irq(line=self.OUT_OF_WINDOW)
+                log = self._show(m)
+                self.assertNotIn("kawari", [kind for kind, _, _ in log])
+
+    def test_a_cue_armed_after_the_snapshot_waits_for_its_own_frame(self):
+        for name, handler, mhires, _ in self.CASES:
+            with self.subTest(mode=name):
+                m = self.Machine(self, handler, mhires=mhires)
+                m.stage(slot=0)
+                m.irq(line=self.OUT_OF_WINDOW)
+                m.stage(slot=1, cue=True)
+                log = self._show(m)
+                self.assertNotIn("kawari", [kind for kind, _, _ in log], "copied with frame 0")
+                self.assertEqual(sum(self._cue_bytes(m)), 1, "the cue was lost")
+                m.irq(line=self.OUT_OF_WINDOW)
+                log = self._show(m)
+                self.assertEqual([e for e in log if e[0] == "kawari"], self.PALETTE_COPY)
 
     def test_a_tracker_written_during_the_snapshot_is_snapshotted_again(self):
         # The host's tracker DMA can land between two of the snapshot loop's

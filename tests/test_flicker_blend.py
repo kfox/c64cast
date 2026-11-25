@@ -52,6 +52,7 @@ from c64cast.video.modes_irq import (  # noqa: E402
     FLICKER_TRACKER_OFF_PHASE,
     FLICKER_TRACKER_OFF_READY,
     FRAME_TRACKER_ADDR,
+    PALETTE_CUE_ADDR,
 )
 
 
@@ -490,15 +491,20 @@ class FlickerHandlerTest(unittest.TestCase):
         pc = BANK_SWAP_IRQ_HANDLER_ADDR
         end = pc + len(FLICKER_SWAP_IRQ_HANDLER)
         chain = end - 3  # the JMP $EA31
-        targets, last = [], None
+        targets, last, cue_done = [], None, None
         while pc < end:
             length, text = dis.instruction_at(pc)
             if text.split()[0] in ("BEQ", "BNE", "BCS"):
                 targets.append(int(text.split("$")[1], 16))
             last = text
             pc += length
+            if text == f"STA ${PALETTE_CUE_ADDR:04x}":
+                cue_done = pc
         self.assertEqual(pc, end, "instruction stream does not land on the handler's end")
         self.assertEqual(last, "JMP $ea31")
+        # The one other branch skips the palette copy when no cue is set.
+        self.assertIn(cue_done, targets)
+        targets.remove(cue_done)
         self.assertTrue(targets, "no branches found — the offsets test is vacuous")
         for t in targets:
             self.assertEqual(t, chain, f"branch to ${t:04X} misses the chain at ${chain:04X}")

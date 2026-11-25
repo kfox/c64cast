@@ -18,7 +18,6 @@ import threading
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 
-from .c64 import RASTER_VBLANK_LINE, VIC
 from .uci import MemoryBus
 
 log = logging.getLogger(__name__)
@@ -59,10 +58,18 @@ OVERLAY_COPY_FIRMWARE = (1, 16)
 # Where a shot's table waits in video memory for its copy into the overlay:
 # the top of VRAM, clear of $0000-$00FF, which the overlay maps.
 PALETTE_SLOT = 0xFF00
-# Last raster line a copy may be fired on. The write lands about ten NTSC
-# lines after the raster read that allowed it (measured), and the double
-# buffer's flip window ends at RASTER_COMMIT_LAST_SAFE_LINE.
-FIRE_BY_LINE = 20
+# The copy `Kawari.stage_palette` sets up, as 6502 source. The double
+# buffer's swap IRQ runs it in the commit that flips to a shot's first frame
+# (video/modes_irq.py): that commit can come fields after the frame is armed,
+# so a host write cannot be timed to it. Clobbers A.
+COPY_STAGED_PALETTE_ASM = f"""
+            LDA #${OVERLAY_PALETTE_RGB:02X}
+            STA ${VIDEO_MEM_1_ADDR:04X}
+            LDA #$00
+            STA ${VIDEO_MEM_1_ADDR + 1:04X}
+            LDA #${DMA_COPY_VMEM:02X}
+            STA ${VIDEO_MEM_1_VAL:04X}
+"""
 
 _PALETTE_OFFSETS = tuple(
     OVERLAY_PALETTE_RGB + 4 * color + channel
@@ -135,9 +142,10 @@ class Kawari:
 
     def stage_palette(self, channels: Sequence[int], stop: Callable[[], bool]) -> bool:
         """Put 48 6-bit channel values in video memory and set up the copy
-        that `fire_palette` starts. False when the Kawari would not activate
-        or `stop` cut the staging short; `drop_palette` then owes it a
-        deactivate. Left active either way, so `fire_palette` is one write."""
+        that `COPY_STAGED_PALETTE_ASM` starts. False when the Kawari would
+        not activate or `stop` cut the staging short; `drop_palette` then owes
+        it a deactivate. Left active either way: the copy is the C64's three
+        writes, and the registers must hold this setup until it has run."""
         table = bytearray(PALETTE_BYTES)
         table[3::4] = bytes(self.info.palette_spare)
         for i, value in enumerate(channels):
@@ -160,29 +168,6 @@ class Kawari:
             bus.flush()
         return True
 
-    def fire_palette(self) -> None:
-        """Copy the staged table into the palette in the raster window where
-        the double-buffer IRQ flips banks, so the colors change with the
-        picture and never partway down it. Waits for the window to open
-        rather than firing in one already open, since the frame just written
-        would then flip a frame after its colors."""
-        bus = self._bus
-        with self._lock:
-            bus.flush()
-            seen_picture = False
-            while True:
-                line = _raster_line(bus)
-                if line is None:
-                    break
-                in_window = line >= RASTER_VBLANK_LINE or line <= FIRE_BY_LINE
-                if in_window and seen_picture:
-                    break
-                seen_picture |= not in_window
-            destination = f"{OVERLAY_PALETTE_RGB:02X}00"
-            bus.write_memory(f"{VIDEO_MEM_1_ADDR:04X}", f"{destination}{DMA_COPY_VMEM:02X}")
-            bus.flush()
-        log.debug("Kawari: palette copy fired after raster line %s", line)
-
     def check_palette(self, channels: Sequence[int]) -> bool:
         """Whether the palette now holds `channels`; deactivates either way."""
         bus = self._bus
@@ -202,13 +187,6 @@ class Kawari:
 
 def _write_word(bus: MemoryBus, address: int, value: int) -> None:
     bus.write_memory(f"{address:04X}", f"{value & 0xFF:02X}{value >> 8:02X}")
-
-
-def _raster_line(bus: MemoryBus) -> int | None:
-    data = bus.read_memory(VIC.D011_CONTROL_1, 2)
-    if not data or len(data) < 2:
-        return None
-    return ((data[0] & 0x80) << 1) | data[1]
 
 
 def _write_flags(bus: MemoryBus, flags: int) -> None:
