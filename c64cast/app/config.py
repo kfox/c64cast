@@ -1278,12 +1278,13 @@ class SceneCfg:
         },
     )
     aspect_mode: str = field(
-        default="fit",
+        default="crop",
         metadata={
             "help": "How each image or video frame is fit to the screen's "
-            "aspect (which [hardware].pixel_aspect sets): 'fit' "
-            "(letterbox/pillarbox so the whole picture shows, padded black "
-            "— the default), 'crop' (center-crop to fill, edges lost), "
+            "aspect (which [hardware].pixel_aspect sets): 'crop' "
+            "(center-crop to fill, edges lost — the default, which spends "
+            "every line on the picture), 'fit' (letterbox/pillarbox so the "
+            "whole picture shows, padded black), "
             "'hybrid' (center-crop halfway between the source's aspect and "
             "the screen's, then letterbox/pillarbox the rest — 16:9 into 4:3 "
             "becomes the broadcast 14:9), or 'stretch' (distort to fill, no "

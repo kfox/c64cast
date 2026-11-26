@@ -1740,12 +1740,12 @@ palette_mode = "grayscale"
 #                                       # independent of duration_s (the cycler
 #                                       # advances on its own timer and the
 #                                       # scene ends when duration_s expires).
-# aspect_mode = "fit"                  # fit (letterbox/pillarbox so the whole
-#                                       # image shows, padded black — default) |
-#                                       # crop (center-crop to fill, edges
-#                                       # lost) | hybrid (crop halfway,
-#                                       # letterbox the rest) | stretch
-#                                       # (distort to fill).
+# aspect_mode = "crop"                 # crop (center-crop to fill, edges
+#                                       # lost — default) | fit
+#                                       # (letterbox/pillarbox so the whole
+#                                       # image shows, padded black) | hybrid
+#                                       # (crop halfway, letterbox the rest) |
+#                                       # stretch (distort to fill).
 # palette_mode = "percell"             # percell | cheap | vivid | grayscale
 
 # --- Video playback ------------------------------------------
@@ -1776,7 +1776,7 @@ palette_mode = "grayscale"
 # # URL's own t=/start=/#t= timestamp fills start_s automatically (in configs
 # # and in `c64cast MEDIA…`); an explicit start_s here wins over the URL.
 # start_s = 90.0
-# aspect_mode = "fit"                  # fit | crop | hybrid | stretch, as for
+# aspect_mode = "crop"                 # crop | fit | hybrid | stretch, as for
 #                                       # a slideshow. hybrid center-crops to
 #                                       # the mean of the source's and the
 #                                       # screen's aspects and letterboxes the

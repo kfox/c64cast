@@ -65,10 +65,10 @@ class IterFramesTest(unittest.TestCase):
         self.assertTrue(ticks)
         self.assertAlmostEqual(_aspect(ticks[0].frame), ASPECT, delta=0.02)
 
-    def test_frames_keep_the_whole_picture_as_the_scene_default_does(self):
+    def test_fit_frames_keep_the_whole_picture(self):
         from scripts.diags._offline_video import iter_frames
 
-        ticks = list(iter_frames(self.path, reference=True))
+        ticks = list(iter_frames(self.path, reference=True, aspect_mode="fit"))
         self.assertAlmostEqual(_aspect(ticks[0].frame), WIDE[0] / WIDE[1], delta=0.02)
         reference = ticks[0].reference
         assert reference is not None
@@ -85,10 +85,10 @@ class OfflineMhiresFramingTest(unittest.TestCase):
         self.addCleanup(lambda: palette.set_host_palette(before[0], name=before[1]))
 
     def test_a_wide_picture_is_letterboxed_and_its_mask_leaves_out_the_bars(self):
-        from scripts.diags._offline_video import OfflineMhires
+        from scripts.diags._offline_video import OfflineMhires, picture
 
-        renderer = OfflineMhires()
-        renderer.show(_wide_image(), 0.0)
+        renderer = OfflineMhires(aspect_mode="fit")
+        renderer.show(picture(_wide_image(), "fit"), 0.0)
         mask = renderer.picture_mask
         self.assertEqual(mask.shape, (200, 320))
         self.assertFalse(mask[0].any())
@@ -147,6 +147,7 @@ class MaskedMetricsTest(unittest.TestCase):
             at_cut=[],
             post_cut=1,
             host_palette="pepto",
+            aspect_mode="fit",
         )
         (row,) = ev.score_clip(ev.Clip(name="t", path=still), variant, [])["rows"]
         self.assertLess(row.picture_cells, ev.m.CELL_ROWS * ev.m.CELL_COLS)

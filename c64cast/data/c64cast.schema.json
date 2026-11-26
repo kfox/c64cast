@@ -2720,14 +2720,14 @@
           },
           "aspect_mode": {
             "type": "string",
-            "description": "How each image or video frame is fit to the screen's aspect (which [hardware].pixel_aspect sets): 'fit' (letterbox/pillarbox so the whole picture shows, padded black \u2014 the default), 'crop' (center-crop to fill, edges lost), 'hybrid' (center-crop halfway between the source's aspect and the screen's, then letterbox/pillarbox the rest \u2014 16:9 into 4:3 becomes the broadcast 14:9), or 'stretch' (distort to fill, no padding or cropping).",
+            "description": "How each image or video frame is fit to the screen's aspect (which [hardware].pixel_aspect sets): 'crop' (center-crop to fill, edges lost \u2014 the default, which spends every line on the picture), 'fit' (letterbox/pillarbox so the whole picture shows, padded black), 'hybrid' (center-crop halfway between the source's aspect and the screen's, then letterbox/pillarbox the rest \u2014 16:9 into 4:3 becomes the broadcast 14:9), or 'stretch' (distort to fill, no padding or cropping).",
             "enum": [
               "crop",
               "fit",
               "stretch",
               "hybrid"
             ],
-            "default": "fit"
+            "default": "crop"
           },
           "song": {
             "type": "integer",
