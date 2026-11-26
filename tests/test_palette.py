@@ -886,8 +886,8 @@ class DisplayModePaletteTest(unittest.TestCase):
         for mode in ("cheap", "vivid", "grayscale", "percell"):
             MCMDisplayMode(palette_mode=mode)
         m = MCMDisplayMode(palette_mode="percell")
-        self.assertEqual(m._hue_corrections, DEFAULT_HUE_CORRECTIONS)
-        self.assertEqual(tuple(m._channel_boost), tuple(CHANNEL_BOOST))
+        self.assertEqual(m._shaping.stock[1], DEFAULT_HUE_CORRECTIONS)
+        self.assertEqual(tuple(m._shaping.stock[0]), tuple(CHANNEL_BOOST))
 
     def test_mhires_palette_mode_validation(self):
         from c64cast.video.modes import MultiHiresDisplayMode
@@ -897,8 +897,8 @@ class DisplayModePaletteTest(unittest.TestCase):
         for mode in ("cheap", "vivid", "grayscale", "percell"):
             MultiHiresDisplayMode(palette_mode=mode)
         m = MultiHiresDisplayMode(palette_mode="percell")
-        self.assertEqual(m._hue_corrections, DEFAULT_HUE_CORRECTIONS)
-        self.assertEqual(tuple(m._channel_boost), tuple(CHANNEL_BOOST))
+        self.assertEqual(m._shaping.stock[1], DEFAULT_HUE_CORRECTIONS)
+        self.assertEqual(tuple(m._shaping.stock[0]), tuple(CHANNEL_BOOST))
 
     def test_color_shaping_is_global_and_configurable(self):
         # [color] shaping applies to every chromatic mode and is fully
@@ -910,11 +910,11 @@ class DisplayModePaletteTest(unittest.TestCase):
             extended = cls(
                 palette_mode="percell", hue_corrections=[{"hue_lo_deg": 10, "hue_hi_deg": 40}]
             )
-            self.assertEqual(len(extended._hue_corrections), len(DEFAULT_HUE_CORRECTIONS) + 1)
+            self.assertEqual(len(extended._shaping.stock[1]), len(DEFAULT_HUE_CORRECTIONS) + 1)
             disabled = cls(palette_mode="vivid", hue_corrections=[], hue_corrections_replace=True)
-            self.assertEqual(disabled._hue_corrections, ())
+            self.assertEqual(disabled._shaping.stock[1], ())
             boosted = cls(palette_mode="cheap", channel_boost=[1.0, 1.0, 1.0])
-            self.assertEqual(tuple(boosted._channel_boost), (1.0, 1.0, 1.0))
+            self.assertEqual(tuple(boosted._shaping.stock[0]), (1.0, 1.0, 1.0))
 
     def test_dark_tone_taper_switch(self):
         from c64cast.video.modes import MCMDisplayMode, MultiHiresDisplayMode

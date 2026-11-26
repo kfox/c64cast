@@ -56,7 +56,10 @@ highlights at luma 220 (`auto_fit_white_level`), so a lit wall keeps some
 headroom below white, while `petscii` stretches to 255, because it draws
 brightness as glyph coverage and dimming only thins the glyphs. All three
 share one built-in hue band, which lifts bright gold and amber onto yellow
-or orange.
+or orange. The built-in gain and band, and the saturation lift `mcm` and
+`mhires` add, aim at the machine's own palette, so they are left out on a
+palette fitted to the source
+(["Choosing the Sixteen"](#choosing-the-sixteen--hardware_palette)).
 
 **6. A forced palette is applied, if one is in force.** This is a lookup
 table, and it short-circuits the next stage: those pixels are already exact
@@ -413,9 +416,10 @@ fades all aim at exactly what the machine now emits. Black, white and the three
 grays stay the machine's own, since fades end on black and cards and overlays
 draw in black and white; the other eleven are chosen from the source, each
 landing on the palette entry it is nearest, so "red" is still the reddest of
-them. The fit sees the source after the scene's own `[color]` shaping
-(`auto_fit`, the hue corrections, the channel boost), which is what the
-quantizer sees too. Measured over the bundled pictures, the per-pixel color
+them. The fit sees the source after `auto_fit` and whatever `channel_boost`
+and `hue_corrections` the `[color]` table sets, which is what the quantizer
+sees too; the built-in gain, gold band and saturation lift are left out, since
+the fit would bake them into its colors. Measured over the bundled pictures, the per-pixel color
 error falls to about a third of what the Ultimate's own table gives.
 
 | | |

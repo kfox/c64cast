@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import itertools
 import logging
+from dataclasses import dataclass
 from typing import TypedDict
 
 import numpy as np
@@ -361,23 +362,57 @@ def validate_palette_mode(mode: str) -> None:
         raise ValueError(f"palette_mode must be one of {PALETTE_MODES}, got {mode!r}")
 
 
+@dataclass(frozen=True)
+class ColorShaping:
+    """[color]'s channel boost and hue bands, for the machine's own palette
+    (`stock`) and for one fitted to the source (`fitted`).
+
+    The built-in boost and bands pull colors onto the stock palette's few
+    chromatic entries. A fitted palette already holds the source's colors, and
+    one fitted to boosted frames bakes the boost into them: a pale face fitted
+    at the stock shaping got a saturated orange. So `fitted` keeps only what
+    [color] sets."""
+
+    stock: tuple[np.ndarray, tuple[HueCorrection, ...]]
+    fitted: tuple[np.ndarray, tuple[HueCorrection, ...]]
+
+    def for_palette(self, fitted: bool) -> tuple[np.ndarray, tuple[HueCorrection, ...]]:
+        return self.fitted if fitted else self.stock
+
+
 def resolve_color_shaping(
     channel_boost: list[float] | None,
     hue_corrections: list[dict] | None,
     replace: bool,
-) -> tuple[np.ndarray, tuple[HueCorrection, ...]]:
+) -> ColorShaping:
     """Build the global pre-quant color-shaping state from [color] config.
 
-    Returns (channel_boost_bgr, hue_corrections). Applies to every chromatic
-    display mode regardless of palette_mode — palette_mode picks slots, [color]
-    shapes colors. `channel_boost` None/empty falls back to the built-in
-    CHANNEL_BOOST. The user's bands follow `DEFAULT_HUE_CORRECTIONS`, or stand
-    alone when `replace` is set.
+    Applies to every chromatic display mode regardless of palette_mode —
+    palette_mode picks slots, [color] shapes colors. Against the stock palette,
+    `channel_boost` None/empty falls back to the built-in CHANNEL_BOOST, and
+    the user's bands follow `DEFAULT_HUE_CORRECTIONS`, or stand alone when
+    `replace` is set.
     """
     boost = parse_channel_boost(channel_boost)
     user = parse_hue_corrections(hue_corrections or [])
-    hue = user if replace else DEFAULT_HUE_CORRECTIONS + user
-    return boost, hue
+    stock_hue = user if replace else DEFAULT_HUE_CORRECTIONS + user
+    fitted_boost = boost if channel_boost else np.ones(3, dtype=np.float32)
+    return ColorShaping(stock=(boost, stock_hue), fitted=(fitted_boost, user))
+
+
+def saturation_for_palette(sat_factor: float, fitted: bool) -> float:
+    """`palette_mode_settings`' saturation, against a stock or a fitted
+    palette. The boost exists so the gray penalty can flip a desaturated
+    pixel to a stock chromatic entry; a fitted palette drops that penalty
+    (`penalty_for_shown_palette`) and fits its colors to the source's own
+    saturation."""
+    return 1.0 if fitted else sat_factor
+
+
+def palette_is_fitted(fitted: bool | None) -> bool:
+    """`fitted` as given, or, when None, whether the host is aiming at a
+    palette fitted to the source now."""
+    return host_palette_is_fitted() if fitted is None else fitted
 
 
 def advance_palette_cycle(
@@ -532,10 +567,13 @@ class DisplayMode:
         from a previous file."""
         self._color_fit = fit
 
-    def quantizer_input(self, img: np.ndarray) -> np.ndarray:
+    def quantizer_input(self, img: np.ndarray, *, fitted: bool | None = None) -> np.ndarray:
         """`img` (BGR uint8) as this mode's quantizer will see it, before any
         dither — what `[color].hardware_palette` fits the machine's 16 colors
-        to. Base: unchanged, for a mode with no color shaping of its own."""
+        to. `fitted` says whether a palette fitted to the source will be
+        showing (`palette_is_fitted`): a fit passes True, since it shapes
+        frames for a table not yet shown. Base: unchanged, for a mode with no
+        color shaping of its own."""
         return img
 
     def set_color_map(self, cmap: ColorMap | None) -> None:

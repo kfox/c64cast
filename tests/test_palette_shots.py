@@ -649,7 +649,7 @@ class VideoShotWiringTest(unittest.TestCase):
         api = mock_backend()
         api.hardware_palette = self.control
         self.mode = mock.MagicMock()
-        self.mode.quantizer_input.side_effect = lambda img: img
+        self.mode.quantizer_input.side_effect = lambda img, fitted=None: img
         self.scene = VideoScene(
             api=api,
             audio=None,
@@ -683,6 +683,18 @@ class VideoShotWiringTest(unittest.TestCase):
         self.scene.teardown()
         self.assertIsNone(self.scene._shot_pusher)
         self.assertFalse(pusher._thread.is_alive())
+
+    def test_shots_are_shaped_for_the_fitted_palette_they_are_fitted_into(self):
+        with self.assertLogs("c64cast.scenes.scenes", level="INFO"):
+            self.scene.setup()
+        self.addCleanup(self.scene.teardown)
+        source = self.scene.source
+        assert source is not None
+        tracker = source.shot_tracker
+        assert isinstance(tracker, ps.PaletteShotTracker)
+        self.mode.quantizer_input.reset_mock()
+        tracker.observe(0.0, _solid(RED))
+        self.assertEqual(self.mode.quantizer_input.call_args.kwargs, {"fitted": True})
 
     def test_the_shortest_stretch_is_the_ultimates(self):
         with self.assertLogs("c64cast.scenes.scenes", level="INFO"):
@@ -759,7 +771,7 @@ class VideoShotWiringTest(unittest.TestCase):
 
     def _cueing_mode(self) -> mock.MagicMock:
         mode = mock.MagicMock(spec=BitmapDisplayMode)
-        mode.quantizer_input.side_effect = lambda img: img
+        mode.quantizer_input.side_effect = lambda img, fitted=None: img
         mode.cues_palette_changes = True
         self.scene.display_mode = mode
         return mode

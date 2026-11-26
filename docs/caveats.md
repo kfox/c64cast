@@ -1269,7 +1269,9 @@ and starved warm colors (yellow/red/purple), with no benefit to the blues
 the cut was meant to favor. Override per-config via `[color].channel_boost`.
 One hue band is built in: bright, saturated gold and
 amber is lifted so it lands on yellow or orange instead of brown;
-`hue_corrections_replace_defaults = true` drops it.
+`hue_corrections_replace_defaults = true` drops it. On a `hardware_palette`
+fitted to the source, the built-in gain and band are left out and only what
+`[color]` sets applies.
 
 This stage is orthogonal to `palette_mode`, which only chooses the VIC-II
 per-cell slot-allocation strategy. If you tune `[color]` and only some modes

@@ -249,8 +249,8 @@ class QuantizerInputTest(unittest.TestCase):
 
     def _expected(self, img: np.ndarray, mode, sat: float) -> np.ndarray:
         shaped = palette.boost_saturation(img, sat)
-        shaped = palette.apply_hue_corrections(shaped, mode._hue_corrections)
-        return np.clip(shaped.astype(np.float32) * mode._channel_boost, 0, 255)
+        shaped = palette.apply_hue_corrections(shaped, mode._shaping.stock[1])
+        return np.clip(shaped.astype(np.float32) * mode._shaping.stock[0], 0, 255)
 
     def test_mcm_applies_its_palette_modes_saturation(self):
         from c64cast.video.modes import MCMDisplayMode
@@ -274,6 +274,79 @@ class QuantizerInputTest(unittest.TestCase):
                 np.testing.assert_allclose(
                     mode.quantizer_input(img), self._expected(img, mode, 1.0), atol=1e-3
                 )
+
+
+class FittedPaletteShapingTest(unittest.TestCase):
+    """Against a palette fitted to the source, only what [color] sets shapes
+    the quantizer's input."""
+
+    BAND = {"hue_lo_deg": 10, "hue_hi_deg": 40, "sat_thresh": 0, "val_thresh": 0, "sat_mult": 1.5}
+
+    def _image(self) -> np.ndarray:
+        rng = np.random.default_rng(11)
+        return rng.integers(0, 256, size=(16, 24, 3), dtype=np.uint8)
+
+    def _modes(self, **color):
+        from c64cast.video.modes import MCMDisplayMode, MultiHiresDisplayMode, PETSCIIDisplayMode
+
+        return (
+            MCMDisplayMode("percell", dark_tone_taper=False, **color),
+            MultiHiresDisplayMode("percell", dark_tone_taper=False, **color),
+            PETSCIIDisplayMode("default", **color),
+        )
+
+    def _fit_host_palette(self) -> None:
+        before = palette.C64_PALETTE_BGR.copy(), palette.active_host_palette_name()
+        self.addCleanup(lambda: palette.set_host_palette(before[0], name=before[1]))
+        palette.set_host_palette(before[0], name="source", fitted=True)
+
+    def test_the_built_in_shaping_is_left_out(self):
+        img = self._image()
+        for mode in self._modes():
+            with self.subTest(mode=type(mode).__name__):
+                np.testing.assert_allclose(
+                    mode.quantizer_input(img, fitted=True), img.astype(np.float32), atol=1e-3
+                )
+                self.assertFalse(np.allclose(mode.quantizer_input(img, fitted=False), img))
+
+    def test_a_configured_boost_and_band_still_apply(self):
+        img = self._image()
+        bands = palette.parse_hue_corrections([self.BAND])
+        expected = np.clip(
+            palette.apply_hue_corrections(img, bands).astype(np.float32) * [1.2, 0.9, 1.1], 0, 255
+        )
+        self.assertFalse(np.array_equal(palette.apply_hue_corrections(img, bands), img))
+        for mode in self._modes(channel_boost=[1.2, 0.9, 1.1], hue_corrections=[self.BAND]):
+            with self.subTest(mode=type(mode).__name__):
+                np.testing.assert_allclose(
+                    mode.quantizer_input(img, fitted=True), expected, atol=1e-3
+                )
+
+    def test_unsaid_it_follows_the_palette_being_shown(self):
+        img = self._image()
+        modes = self._modes()
+        stock = [m.quantizer_input(img) for m in modes]
+        self._fit_host_palette()
+        for mode, before in zip(modes, stock, strict=True):
+            with self.subTest(mode=type(mode).__name__):
+                np.testing.assert_allclose(
+                    mode.quantizer_input(img), mode.quantizer_input(img, fitted=True)
+                )
+                self.assertFalse(np.allclose(mode.quantizer_input(img), before))
+
+    def test_petscii_styles_get_the_fitted_shaping_too(self):
+        from c64cast.video.modes import PETSCIIDisplayMode
+
+        mode = PETSCIIDisplayMode("default")
+        mode.frame_target_size = (40, 25)
+        style = mock.MagicMock()
+        style.compose.return_value = (np.zeros((25, 40), np.uint8),) * 2
+        mode._style = style
+        self._fit_host_palette()
+        mode.compose(self._image())
+        boost, bands = style.compose.call_args.args[1:3]
+        np.testing.assert_allclose(boost, (1.0, 1.0, 1.0))
+        self.assertEqual(bands, ())
 
 
 class _FakeApi:
@@ -835,7 +908,7 @@ class SlideshowPushTest(unittest.TestCase):
         api = mock_backend()
         api.hardware_palette = self.control
         mode = mock.MagicMock()
-        mode.quantizer_input.side_effect = lambda img: img
+        mode.quantizer_input.side_effect = lambda img, fitted=None: img
         mode.frame_target_size = (160, 200)
         self.mode = mode
         self.scene = SlideshowScene(
@@ -938,7 +1011,7 @@ class PushSourcePaletteTest(unittest.TestCase):
         control = _mock_control()
         control.channel_bits = 6
         scene = mock.MagicMock()
-        scene.display_mode.quantizer_input.side_effect = lambda img: img
+        scene.display_mode.quantizer_input.side_effect = lambda img, fitted=None: img
         _push_source_palette(scene, control, [_warm_image()])
         table = control.show.call_args.args[0]
         shown = {round(q * 255 / 63) for q in range(64)}
@@ -956,7 +1029,7 @@ class VideoPushTest(unittest.TestCase):
         api = mock_backend()
         api.hardware_palette = self.control
         self.mode = mock.MagicMock()
-        self.mode.quantizer_input.side_effect = lambda img: img
+        self.mode.quantizer_input.side_effect = lambda img, fitted=None: img
         self.scene = VideoScene(
             api=api,
             audio=None,
@@ -985,8 +1058,9 @@ class VideoPushTest(unittest.TestCase):
         self.mode.quantizer_input.side_effect = self._shaped
         return self.fit, None
 
-    def _shaped(self, img):
+    def _shaped(self, img, fitted=None):
         self.assertIs(self.mode.set_color_fit.call_args.args[0], self.fit)
+        self.assertIs(fitted, True)
         return img
 
     def test_setup_pre_scans_and_pushes_the_fitted_palette(self):
