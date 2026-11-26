@@ -27,9 +27,11 @@ from .base import (
     MCMComposeBuffers,
     advance_palette_cycle,
     ema_counts,
+    palette_is_fitted,
     palette_mode_settings,
     penalty_for_shown_palette,
     resolve_color_shaping,
+    saturation_for_palette,
     shape_for_quantize,
     validate_palette_mode,
 )
@@ -98,7 +100,7 @@ class MCMDisplayMode(CharDisplayMode):
         self._sat_factor, self._gray_penalty = palette_mode_settings(
             palette_mode, self._gray_penalty_strength
         )
-        self._channel_boost, self._hue_corrections = resolve_color_shaping(
+        self._shaping = resolve_color_shaping(
             channel_boost, hue_corrections, hue_corrections_replace
         )
         self._dark_tone_taper = bool(dark_tone_taper)
@@ -182,13 +184,15 @@ class MCMDisplayMode(CharDisplayMode):
         api.write_regs("d020", 0, 0, 0, 0)
         api.write_memory("d011", "1b")
 
-    def quantizer_input(self, img: np.ndarray) -> np.ndarray:
+    def quantizer_input(self, img: np.ndarray, *, fitted: bool | None = None) -> np.ndarray:
+        fitted = palette_is_fitted(fitted)
+        boost, hue = self._shaping.for_palette(fitted)
         return shape_for_quantize(
             img,
             self._fit_for_apply(),
-            self._sat_factor,
-            self._hue_corrections,
-            self._channel_boost,
+            saturation_for_palette(self._sat_factor, fitted),
+            hue,
+            boost,
             self._dark_tone_taper,
         )
 

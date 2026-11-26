@@ -1920,7 +1920,9 @@ class ColorCfg:
         metadata={
             "help": "Per-channel pre-quantize gain [blue, green, red] (OpenCV BGR "
             "order). Empty = built-in default [1.3, 1.2, 1.0] (blue/green "
-            "lift toward C64-friendly hues; red left neutral)."
+            "lift toward C64-friendly hues; red left neutral) on the machine's "
+            "own palette, and no gain on one hardware_palette fitted to the "
+            "source."
         },
     )
     dark_tone_taper: bool = field(
@@ -1942,7 +1944,8 @@ class ColorCfg:
             "Applied after the built-in band, a V x1.3 lift for bright, "
             "saturated gold and amber (hue 36-60 degrees, S >= 0.6, V >= 0.2) "
             "so it lands on yellow or orange instead of brown. Empty = the "
-            "built-in band alone."
+            "built-in band alone. On a hardware_palette fitted to the source "
+            "the built-in band is left out and these bands apply alone."
         },
     )
     hue_corrections_replace_defaults: bool = field(
@@ -2067,6 +2070,10 @@ class ColorCfg:
             "machine before the scene paints; quantization, dither and fades "
             "then aim at exactly those colors, and the machine's palette is "
             "put back before the next scene that does not use it, and at exit. "
+            "Against those colors, the built-in shaping meant for the "
+            "machine's palette is left out: the saturation lift, the default "
+            "channel_boost and the built-in gold band; a channel_boost or "
+            "hue_corrections the config sets still apply. "
             "Video and slideshow scenes only, "
             "since they can see their content first. Needs an Ultimate 64 on "
             "firmware 3.15a or newer, a C64 Ultimate on 1.2.1 or newer, or a "

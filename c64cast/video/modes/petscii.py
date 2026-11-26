@@ -22,7 +22,7 @@ from c64cast.video.petscii_styles import (
     validate_style,
 )
 
-from .base import ComposeBuffers, resolve_color_shaping, shape_for_quantize
+from .base import ComposeBuffers, palette_is_fitted, resolve_color_shaping, shape_for_quantize
 from .char import CharDisplayMode, clear_char_screen
 
 
@@ -65,7 +65,7 @@ class PETSCIIDisplayMode(CharDisplayMode):
         self._configured_style = style  # may be "random" sentinel
         self._style_name = style if style != RANDOM_STYLE else pick_random_style_name()
         self._style = make_style(self._style_name)
-        self._channel_boost, self._hue_corrections = resolve_color_shaping(
+        self._shaping = resolve_color_shaping(
             channel_boost, hue_corrections, hue_corrections_replace
         )
         # Screen RAM only; color RAM stays on the DMAWRITE delta path.
@@ -110,12 +110,11 @@ class PETSCIIDisplayMode(CharDisplayMode):
         self._perceptual = value == "perceptual"
         return f"color_match={value}"
 
-    def quantizer_input(self, img: np.ndarray) -> np.ndarray:
+    def quantizer_input(self, img: np.ndarray, *, fitted: bool | None = None) -> np.ndarray:
         """The shaping every style shares; a style's own extra saturation is
         left out, so this is the common ground the styles quantize from."""
-        return shape_for_quantize(
-            img, self._fit_for_apply(), 1.0, self._hue_corrections, self._channel_boost
-        )
+        boost, hue = self._shaping.for_palette(palette_is_fitted(fitted))
+        return shape_for_quantize(img, self._fit_for_apply(), 1.0, hue, boost)
 
     def compose(self, frame) -> ComposeBuffers:
         assert self.frame_target_size is not None
@@ -123,9 +122,8 @@ class PETSCIIDisplayMode(CharDisplayMode):
         fit = self._fit_for_apply()
         if fit is not None:
             img = apply_color_fit(img, fit)
-        screen, color = self._style.compose(
-            img, self._channel_boost, self._hue_corrections, self._perceptual
-        )
+        boost, hue = self._shaping.for_palette(palette_is_fitted(None))
+        screen, color = self._style.compose(img, boost, hue, self._perceptual)
         return {"screen": screen, "color": color, "text": CharTextSurface(screen, color)}
 
     def push(self, api: C64Backend, buffers: ComposeBuffers) -> None:

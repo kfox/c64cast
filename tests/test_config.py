@@ -3197,7 +3197,7 @@ class WashoutSettingsWiringTest(unittest.TestCase):
             with self.subTest(mode=name):
                 mode = scene_factory._build_display_mode(name, color=cfgmod.ColorCfg())
                 assert isinstance(mode, shaping)
-                np.testing.assert_allclose(mode._channel_boost, (1.3, 1.2, 1.0), rtol=1e-6)
+                np.testing.assert_allclose(mode._shaping.stock[0], (1.3, 1.2, 1.0), rtol=1e-6)
 
     def test_a_configured_channel_boost_reaches_every_shaping_mode(self):
         from c64cast.video.modes import MCMDisplayMode, MultiHiresDisplayMode, PETSCIIDisplayMode
@@ -3209,7 +3209,7 @@ class WashoutSettingsWiringTest(unittest.TestCase):
                     name, color=cfgmod.ColorCfg(channel_boost=[1.1, 1.0, 0.9])
                 )
                 assert isinstance(mode, shaping)
-                np.testing.assert_allclose(mode._channel_boost, (1.1, 1.0, 0.9), rtol=1e-6)
+                np.testing.assert_allclose(mode._shaping.stock[0], (1.1, 1.0, 0.9), rtol=1e-6)
 
     def test_config_path_forwards_the_gray_penalty_through_a_palette_mode_change(self):
         from c64cast.video.modes import MCMDisplayMode, MultiHiresDisplayMode

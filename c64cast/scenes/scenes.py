@@ -570,7 +570,7 @@ def _push_source_palette(scene: Scene, control: HardwarePalette, frames: list[np
     sampler = FrameSampler()
     for f in frames:
         sampler.add(f)
-    shaped = [scene.display_mode.quantizer_input(f) for f in sampler.frames]
+    shaped = [scene.display_mode.quantizer_input(f, fitted=True) for f in sampler.frames]
     table = derive_hardware_palette(
         shaped, control.machine_palette, channel_bits=control.channel_bits
     )
@@ -1808,7 +1808,7 @@ class VideoScene(MediaFileMixin, Scene):
             return
         pusher = ShotPusher(control, cue)
         self.source.shot_tracker = PaletteShotTracker(
-            self.display_mode.quantizer_input,
+            partial(self.display_mode.quantizer_input, fitted=True),
             pusher.ready,
             min_stretch_s=min_stretch_s(control.ack_delay_s(cue is not None) + control.load_time_s),
             ready_ahead_s=ready_ahead_s(control.load_time_s),
