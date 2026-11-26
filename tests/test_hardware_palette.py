@@ -35,9 +35,12 @@ def _mock_control() -> mock.Mock:
     control.machine_palette = MACHINE.copy()
     control.channel_bits = hp.UltimatePaletteWriter.channel_bits
     control.load_time_s = hp.UltimatePaletteWriter.load_time_s
-    control.ack_delay_s = hp.UltimatePaletteWriter.ack_delay_s
+    control.ack_delay_s.side_effect = lambda cued: (
+        hp.CUED_ANSWER_WAIT_S if cued else hp.uci.ACK_DELAY_S
+    )
     control.follows_shots = hp.UltimatePaletteWriter.follows_shots
-    control.cues_frames = hp.UltimatePaletteWriter.cues_frames
+    control.frame_cue = hp.UltimatePaletteWriter.frame_cue
+    control.goes_from_host = hp.UltimatePaletteWriter.goes_from_host
     return control
 
 
@@ -593,7 +596,8 @@ class _FakeWriter:
     device = "the test machine"
     channel_bits = 6
     load_time_s = 0.02
-    ack_delay_s = 0.0
+    frame_cue = 0x01
+    goes_from_host = True
     unreadable = "the test machine did not answer"
 
     def __init__(self, machine: np.ndarray | None) -> None:
@@ -618,13 +622,16 @@ class _FakeWriter:
     def load(self, table_bgr, stop) -> bool:
         return True
 
-    def go(self) -> None:
+    def ack_delay_s(self, cued: bool) -> float:
+        return 0.0
+
+    def go(self, cued: bool) -> None:
         pass
 
-    def ack(self) -> None:
+    def ack(self, cued: bool) -> None:
         pass
 
-    def abort(self) -> None:
+    def abort(self, cued: bool) -> None:
         pass
 
 

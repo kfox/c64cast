@@ -17,6 +17,7 @@ import numpy as np
 from c64cast.app.config import Config, SceneCfg
 from c64cast.hw import hardware_palette as hp
 from c64cast.hw import hw_provision, kawari
+from c64cast.video import modes_irq
 
 # 6-bit channels as the hardware reported them, with a set high bit on white's
 # unused upper bits to show they are masked off.
@@ -460,12 +461,10 @@ class ShotPushTest(unittest.TestCase):
     def _show_shot(self) -> None:
         self.writer.load(self.shot, lambda: False)
         self.bus.cue()
-        self.writer.go()
+        self.writer.go(True)
         self.bus.commit()
 
     def _cue_state(self) -> bytes:
-        from c64cast.video import modes_irq
-
         start = modes_irq.PALETTE_CUE_STATE_ADDR
         return bytes(self.bus.ram[start : start + modes_irq.PALETTE_CUE_STATE_LEN])
 
@@ -473,9 +472,9 @@ class ShotPushTest(unittest.TestCase):
         self.assertTrue(self.writer.load(self.shot, lambda: False))
         self.assertEqual(self.bus.palette_6bit(), hp._kawari_channels(self.machine))
         self.bus.cue()
-        self.writer.go()
+        self.writer.go(True)
         self.bus.commit()
-        self.writer.ack()
+        self.writer.ack(True)
         self.assertEqual(self.bus.palette_6bit(), hp._kawari_channels(self.shot))
         self.assertEqual(self.bus.copies, 1)
         self.assertFalse(self.bus.active)
@@ -483,31 +482,31 @@ class ShotPushTest(unittest.TestCase):
 
     def test_the_palette_waits_for_the_commit_that_shows_the_cued_frame(self):
         self.writer.load(self.shot, lambda: False)
-        self.writer.go()
+        self.writer.go(True)
         self.bus.commit()
         self.assertEqual(self.bus.copies, 0, "a commit with no cue started the copy")
         self.bus.cue()
         self.assertEqual(self.bus.copies, 0, "the cue alone started the copy")
         self.bus.commit()
         self.assertEqual(self.bus.palette_6bit(), hp._kawari_channels(self.shot))
-        self.assertEqual(self._cue_state(), bytes(2))
+        self.assertEqual(self._cue_state(), bytes(modes_irq.PALETTE_CUE_STATE_LEN))
 
     def test_the_ack_waits_for_the_commit(self):
         self.writer.load(self.shot, lambda: False)
         self.bus.cue()
-        self.writer.go()
+        self.writer.go(True)
         with mock.patch.object(hp.time, "sleep", side_effect=lambda _s: self.bus.commit()) as nap:
-            self.writer.ack()
+            self.writer.ack(True)
         nap.assert_called()
         self.assertEqual(self.bus.palette_6bit(), hp._kawari_channels(self.shot))
 
     def test_a_cue_the_c64_never_takes_fails_the_ack_and_is_withdrawn(self):
         self.writer.load(self.shot, lambda: False)
         self.bus.cue()
-        self.writer.go()
+        self.writer.go(True)
         with mock.patch.object(hp, "COPY_WAIT_S", 0.0), self.assertRaises(RuntimeError):
-            self.writer.ack()
-        self.assertEqual(self._cue_state(), bytes(2))
+            self.writer.ack(True)
+        self.assertEqual(self._cue_state(), bytes(modes_irq.PALETTE_CUE_STATE_LEN))
         self.assertFalse(self.bus.active)
         self.bus.commit()
         self.assertEqual(self.bus.palette_6bit(), hp._kawari_channels(self.machine))
@@ -515,7 +514,7 @@ class ShotPushTest(unittest.TestCase):
 
     def test_a_shot_keeps_the_spare_bytes_the_kawari_had(self):
         self._show_shot()
-        self.writer.ack()
+        self.writer.ack(True)
         spare = [self.bus.overlay[o] for o in kawari._SPARE_OFFSETS]
         self.assertEqual(spare, [0x3F] * kawari.PALETTE_COLORS)
 
@@ -523,26 +522,26 @@ class ShotPushTest(unittest.TestCase):
         self.bus.lose_trigger = True
         self._show_shot()
         with self.assertRaises(RuntimeError):
-            self.writer.ack()
+            self.writer.ack(True)
         self.assertFalse(self.bus.active)
 
     def test_a_stopped_load_is_dropped(self):
         self.assertFalse(self.writer.load(self.shot, lambda: True))
-        self.writer.abort()
+        self.writer.abort(True)
         self.assertFalse(self.bus.active)
         self.assertEqual(self.bus.copies, 0)
 
     def test_an_abort_withdraws_the_cue(self):
         self.writer.load(self.shot, lambda: False)
         self.bus.cue()
-        self.writer.go()
-        self.writer.abort()
+        self.writer.go(True)
+        self.writer.abort(True)
         later = self.machine.copy()
         later[3] = (0, 0, 0)
         self.assertTrue(self.writer.load(later, lambda: False))
         self.bus.commit()
         self.assertEqual(self.bus.copies, 0, "the withdrawn cue copied the next shot's table")
-        self.assertEqual(self._cue_state(), bytes(2))
+        self.assertEqual(self._cue_state(), bytes(modes_irq.PALETTE_CUE_STATE_LEN))
 
     def test_until_the_ack_the_record_names_both_tables(self):
         self.writer.load(self.shot, lambda: False)
@@ -551,16 +550,16 @@ class ShotPushTest(unittest.TestCase):
         np.testing.assert_array_equal(shows[0], self.machine)
         np.testing.assert_array_equal(shows[1], self.shot)
         self.bus.cue()
-        self.writer.go()
+        self.writer.go(True)
         self.bus.commit()
-        self.writer.ack()
+        self.writer.ack(True)
         shows = self._record_shows()
         self.assertEqual(len(shows), 1)
         np.testing.assert_array_equal(shows[0], self.shot)
 
     def test_an_abort_after_the_copy_keeps_its_table_in_the_record(self):
         self._show_shot()
-        self.writer.abort()
+        self.writer.abort(True)
         later = self.machine.copy()
         later[3] = (0, 0, 0)
         self.writer.load(later, lambda: False)

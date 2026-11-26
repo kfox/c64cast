@@ -173,7 +173,7 @@ class BitmapDisplayMode(DisplayMode):
     _reports_commits: bool = False
     _awaiting_commit: int | None = None
     _commit_timeout_logged: bool = False
-    _palette_cue: bool = False
+    _palette_cue: int = 0
     # Both set by the subclasses' __init__.
     use_reu_staged: bool
     _blend_table: BlendTable | None
@@ -203,7 +203,7 @@ class BitmapDisplayMode(DisplayMode):
         """install_bank_swap_irq, recorded for teardown(). Recorded first, so
         an install the link cuts short is still unhooked."""
         self._bank_swap_hooked = True
-        self._palette_cue = False
+        self._palette_cue = 0
         install_bank_swap_irq(
             api,
             handler_bytes,
@@ -213,18 +213,19 @@ class BitmapDisplayMode(DisplayMode):
         )
 
     @property
-    def cues_palette_copies(self) -> bool:
-        """Whether a staged Kawari palette copy can ride a frame: only a swap
-        IRQ commits frames, and starts the copy as it does."""
+    def cues_palette_changes(self) -> bool:
+        """Whether a palette change can ride a frame: only a swap IRQ commits
+        frames, and starts the change as it does."""
         return self._bank_swap_hooked
 
-    def cue_palette_copy(self) -> None:
-        """Start the staged Kawari palette copy in the commit that shows the
-        next frame pushed."""
-        self._palette_cue = True
+    def cue_palette_change(self, cue: int) -> None:
+        """Have the commit that shows the next frame pushed start the palette
+        change `cue` names (modes_irq.KAWARI_PALETTE_CUE,
+        ULTIMATE_PALETTE_CUE)."""
+        self._palette_cue = cue
 
-    def _take_palette_cue(self) -> bool:
-        cue, self._palette_cue = self._palette_cue, False
+    def _take_palette_cue(self) -> int:
+        cue, self._palette_cue = self._palette_cue, 0
         return cue
 
     def teardown(self, api: C64Backend) -> None:

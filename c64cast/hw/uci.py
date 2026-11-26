@@ -322,6 +322,14 @@ def load_palette(
     return True
 
 
+# What `go` writes, for a C64 to push the loaded command itself. A is left
+# nonzero.
+PUSH_LOADED_COMMAND_ASM = f"""
+            LDA #${CONTROL_PUSH_CMD:02X}
+            STA ${UCI_CONTROL:04X}
+"""
+
+
 def go(bus: MemoryBus) -> None:
     """Run the loaded command. Not flushed, so a caller that writes it after
     a frame's writes has the colors change on the frame that needs them."""
