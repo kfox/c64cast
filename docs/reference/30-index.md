@@ -81,7 +81,7 @@ Every name c64cast answers to — 475 of them — and the pages that discuss eac
 | `cell_pick` (mode) | [`mode` (F)](25-appendix-f-live-targets.md#mode) |
 | `cell_strategy` | [Which Colors — `cell_strategy` (3)](04-display-pipeline.md#which-colors--cell_strategy), [Blending Colors the VIC Cannot Draw — `flicker_tolerance` (3)](04-display-pipeline.md#blending-colors-the-vic-cannot-draw--flicker_tolerance), [What to Give Up First (5)](06-under-the-hood.md#what-to-give-up-first) |
 | `cell_strategy` (mode) | [`color` (A)](20-appendix-a-configuration.md#color), [`mode` (F)](25-appendix-f-live-targets.md#mode) |
-| `channel_boost` | [From Frame to Screen (3)](04-display-pipeline.md#from-frame-to-screen), [How Near — `color_match` (3)](04-display-pipeline.md#how-near--color_match), [`color` (A)](20-appendix-a-configuration.md#color) |
+| `channel_boost` | [From Frame to Screen (3)](04-display-pipeline.md#from-frame-to-screen), [How Near — `color_match` (3)](04-display-pipeline.md#how-near--color_match), [Choosing the Sixteen — `hardware_palette` (3)](04-display-pipeline.md#choosing-the-sixteen--hardware_palette) |
 | character ROM | [Paths Inside a File (1)](02-config-rules.md#paths-inside-a-file), [The Three Network Services (1)](02-config-rules.md#the-three-network-services), [The Character ROM (5)](06-under-the-hood.md#the-character-rom) |
 | `charset_path` | [`preview` (A)](20-appendix-a-configuration.md#preview), [`big_text` (C)](22-appendix-c-overlays.md#big_text) |
 | `--check-for-updates` | [The Web Console Host (6)](07-inputs-and-outputs.md#the-web-console-host), [Updates (G)](26-appendix-g-cli-flags.md#updates) |
@@ -265,7 +265,7 @@ Every name c64cast answers to — 475 of them — and the pages that discuss eac
 | `host_sid_chips` | [Machines With More Than One Internal SID (4)](05-sound-and-music.md#machines-with-more-than-one-internal-sid), [When a Tune Wants More Chips Than the Machine Has (4)](05-sound-and-music.md#when-a-tune-wants-more-chips-than-the-machine-has), [Picking Tunes the Machine Can Play (4)](05-sound-and-music.md#picking-tunes-the-machine-can-play) |
 | `host_sid_model` | [Declaring the Host Chip (4)](05-sound-and-music.md#declaring-the-host-chip), [Machines With More Than One Internal SID (4)](05-sound-and-music.md#machines-with-more-than-one-internal-sid), [When a Tune Wants More Chips Than the Machine Has (4)](05-sound-and-music.md#when-a-tune-wants-more-chips-than-the-machine-has) |
 | `host_sid_tune_match` | [Machines With More Than One Internal SID (4)](05-sound-and-music.md#machines-with-more-than-one-internal-sid), [Picking Tunes the Machine Can Play (4)](05-sound-and-music.md#picking-tunes-the-machine-can-play), [`hardware` (A)](20-appendix-a-configuration.md#hardware) |
-| `hue_corrections` | [From Frame to Screen (3)](04-display-pipeline.md#from-frame-to-screen), [`color` (A)](20-appendix-a-configuration.md#color) |
+| `hue_corrections` | [From Frame to Screen (3)](04-display-pipeline.md#from-frame-to-screen), [Choosing the Sixteen — `hardware_palette` (3)](04-display-pipeline.md#choosing-the-sixteen--hardware_palette), [`color` (A)](20-appendix-a-configuration.md#color) |
 | `hue_corrections_replace_defaults` | [`color` (A)](20-appendix-a-configuration.md#color) |
 
 ## I

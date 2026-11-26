@@ -192,6 +192,32 @@ class SectionCoverageTest(unittest.TestCase):
         )
 
 
+class ReferenceShapingTest(unittest.TestCase):
+    def test_a_copy_of_the_reference_shapes_a_fitted_palette_as_the_defaults_do(self):
+        import numpy as np
+
+        from c64cast.video.modes import resolve_color_shaping
+
+        def fitted(color):
+            return resolve_color_shaping(
+                color.get("channel_boost"),
+                color.get("hue_corrections"),
+                color.get("hue_corrections_replace_defaults", False),
+            ).fitted
+
+        default = cfgmod.ColorCfg()
+        reference = fitted(_load(_EXAMPLE)["color"])
+        expected = fitted(
+            {
+                "channel_boost": default.channel_boost,
+                "hue_corrections": default.hue_corrections,
+                "hue_corrections_replace_defaults": default.hue_corrections_replace_defaults,
+            }
+        )
+        np.testing.assert_array_equal(reference[0], expected[0])
+        self.assertEqual(reference[1], expected[1])
+
+
 class TypeCoverageTest(unittest.TestCase):
     def _examples_union(self):
         scene_types, overlay_types = set(), set()
