@@ -147,6 +147,22 @@ def _frames(*parts) -> list[np.ndarray]:
     return out
 
 
+class HardwarePaletteErrorTest(unittest.TestCase):
+    def test_dark_pixels_do_not_count(self):
+        red = _solid(RED)
+        half_dark = red.copy()
+        half_dark[:, :40] = palette.HARDWARE_PALETTE_DARK_LEVEL
+        self.assertAlmostEqual(
+            palette.hardware_palette_error(half_dark, MACHINE),
+            palette.hardware_palette_error(red, MACHINE),
+            places=4,
+        )
+
+    def test_a_frame_with_nothing_lit_has_no_error(self):
+        dark = _solid((palette.HARDWARE_PALETTE_DARK_LEVEL,) * 3)
+        self.assertEqual(palette.hardware_palette_error(dark, MACHINE), 0.0)
+
+
 class PaletteShotTrackerTest(unittest.TestCase):
     def test_the_first_frame_and_each_cut_start_a_stretch(self):
         starts, rec, _ = _track(_frames((RED, 3), (BLUE, 3), (RED, 3)))
@@ -219,6 +235,20 @@ class PaletteShotTrackerTest(unittest.TestCase):
         with mock.patch.object(ps, "DRIFT_RATIO", 1e9):
             starts, _, _ = _track(frames)
         self.assertEqual(starts, [0.0])
+
+    def test_a_subject_growing_on_black_starts_a_stretch_on_drift(self):
+        frames = [_solid(BLUE, noise=40, seed=i) for i in range(int(3 * FPS))]
+        for k in range(int(FPS)):
+            frames.append((frames[k].astype(np.float32) * (1 - (k + 1) / FPS)).astype(np.uint8))
+        frames += [_solid((0, 0, 0)) for _ in range(int(FPS))]
+        grow = int(4 * FPS)
+        for k in range(grow):
+            frame = _solid((0, 0, 0))
+            side = 3 + 11 * k // grow
+            frame[24 : 24 + side, 34 : 34 + side] = RED
+            frames.append(frame)
+        starts, _, _ = _track(frames)
+        self.assertGreater(starts[-1], 5.0, starts)
 
     def test_steady_frames_never_drift(self):
         starts, _, _ = _track(_frames((RED, 8)))

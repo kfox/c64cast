@@ -1508,6 +1508,11 @@ HARDWARE_PALETTE_SCENE_TYPES: tuple[str, ...] = ("video", "slideshow")
 HARDWARE_PALETTE_PINNED = GRAY_INDICES
 _HARDWARE_PALETTE_FREE = tuple(i for i in range(16) if i not in HARDWARE_PALETTE_PINNED)
 _HARDWARE_PALETTE_ITERATIONS = 20
+# Pixels no brighter than this are left out of a table's error. The pinned
+# black reproduces them in every table, so in a dark frame they outvote the
+# lit subject: a face zooming in on black never moved the mean far enough
+# to call for a table that holds its colors.
+HARDWARE_PALETTE_DARK_LEVEL = 24
 
 
 def wants_hardware_palette(color: ColorCfg) -> bool:
@@ -1645,9 +1650,14 @@ def _round_to_channel_bits(table_bgr: np.ndarray, bits: int) -> np.ndarray:
 
 
 def hardware_palette_error(frame_bgr: np.ndarray, table_bgr: np.ndarray) -> float:
-    """How far `frame_bgr`'s pixels sit from their nearest of the 16 colors
-    in `table_bgr`: the mean Lab distance, over every fourth pixel."""
-    lab = _bgr_to_lab(np.asarray(frame_bgr, dtype=np.float32).reshape(-1, 3)[::4])
+    """How far `frame_bgr`'s lit pixels sit from their nearest of the 16
+    colors in `table_bgr`: the mean Lab distance, over every fourth pixel
+    brighter than `HARDWARE_PALETTE_DARK_LEVEL`; 0.0 when none is."""
+    px = np.asarray(frame_bgr, dtype=np.float32).reshape(-1, 3)[::4]
+    px = px[px.max(axis=1) > HARDWARE_PALETTE_DARK_LEVEL]
+    if px.shape[0] == 0:
+        return 0.0
+    lab = _bgr_to_lab(px)
     centers = _bgr_to_lab(np.asarray(table_bgr, dtype=np.float32).reshape(16, 3))
     d = (lab**2).sum(axis=1)[:, None] - 2.0 * lab @ centers.T + (centers**2).sum(axis=1)
     return float(np.sqrt(np.maximum(d.min(axis=1), 0.0)).mean())
