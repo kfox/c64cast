@@ -189,8 +189,8 @@ class PaletteShotTrackerTest(unittest.TestCase):
         starts, _, _ = _track(frames, min_stretch_s=quick)
         self.assertEqual(starts, [0.0, 3.0, 4.0])
 
-    def test_min_stretch_s_covers_the_load_and_keeps_a_floor(self):
-        self.assertAlmostEqual(ps.min_stretch_s(hp.UltimatePaletteWriter.load_time_s), 1.3)
+    def test_min_stretch_s_covers_the_turnaround_and_keeps_a_floor(self):
+        self.assertAlmostEqual(ps.min_stretch_s(1.2), 1.3)
         self.assertEqual(ps.min_stretch_s(0.02), ps.MIN_STRETCH_FLOOR_S)
 
     def test_a_short_shot_is_handed_over_with_the_frames_it_has(self):
@@ -668,6 +668,29 @@ class VideoShotWiringTest(unittest.TestCase):
             if found is not None:
                 starts.append(found[0])
         self.assertEqual(starts, [0.0, 3.0])
+
+    def _min_stretch_s(self) -> float:
+        source = self.scene.source
+        assert source is not None
+        tracker = source.shot_tracker
+        assert isinstance(tracker, ps.PaletteShotTracker)
+        return tracker._min_stretch_s
+
+    def test_a_cued_ultimates_shortest_stretch_waits_for_the_c64s_answer(self):
+        self._cueing_mode()
+        with self.assertLogs("c64cast.scenes.scenes", level="INFO"):
+            self.scene.setup()
+        self.addCleanup(self.scene.teardown)
+        turnaround = hp.CUED_ANSWER_WAIT_S + hp.UltimatePaletteWriter.load_time_s
+        self.assertAlmostEqual(self._min_stretch_s(), ps.min_stretch_s(turnaround))
+
+    def test_an_uncued_ultimates_shortest_stretch_waits_for_the_hosts_ack(self):
+        self.mode.name = "petscii"
+        with self.assertLogs("c64cast.scenes.scenes", level="INFO"):
+            self.scene.setup()
+        self.addCleanup(self.scene.teardown)
+        turnaround = uci.ACK_DELAY_S + hp.UltimatePaletteWriter.load_time_s
+        self.assertAlmostEqual(self._min_stretch_s(), ps.min_stretch_s(turnaround))
 
     def test_a_stretch_is_handed_over_in_time_for_the_ultimates_load(self):
         with self.assertLogs("c64cast.scenes.scenes", level="INFO"):

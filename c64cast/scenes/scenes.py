@@ -1810,7 +1810,7 @@ class VideoScene(MediaFileMixin, Scene):
         self.source.shot_tracker = PaletteShotTracker(
             self.display_mode.quantizer_input,
             pusher.ready,
-            min_stretch_s=min_stretch_s(control.load_time_s),
+            min_stretch_s=min_stretch_s(control.ack_delay_s(cue is not None) + control.load_time_s),
             ready_ahead_s=ready_ahead_s(control.load_time_s),
         )
         pusher.start()

@@ -28,8 +28,8 @@ from c64cast.video.rolling_palette import _downscale
 from c64cast.video.shots import SHOT_CUT_RATIO, AdaptiveCutDetector
 
 FIT_S = 2.0
-# A stretch that starts sooner than its table can load after the last one
-# keeps the colors of the one before. The floor keeps a machine that loads a
+# A stretch that starts sooner than its table can load after the last one's
+# push is answered keeps the colors of the one before. The floor keeps a machine that loads a
 # table quickly from changing colors on every rapid cut.
 MIN_STRETCH_FLOOR_S = 0.5
 _LOAD_MARGIN_S = 0.1
@@ -44,10 +44,11 @@ DRIFT_FRAMES = 5
 _seq = itertools.count()
 
 
-def min_stretch_s(load_time_s: float) -> float:
+def min_stretch_s(turnaround_s: float) -> float:
     """The shortest stretch worth its own table on a machine whose writer
-    loads one in `load_time_s`."""
-    return max(MIN_STRETCH_FLOOR_S, load_time_s + _LOAD_MARGIN_S)
+    takes `turnaround_s` from one push to the next table loaded: the wait
+    for the push's answer, then the load."""
+    return max(MIN_STRETCH_FLOOR_S, turnaround_s + _LOAD_MARGIN_S)
 
 
 def ready_ahead_s(load_time_s: float) -> float:
