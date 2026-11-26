@@ -333,7 +333,7 @@ display = "mhires"
 file = "~/Pictures/*.jpg"
 duration_s = 120.0
 image_duration_s = 5.0
-aspect_mode = "fit"
+aspect_mode = "crop"
 ```
 
 *Needs no extra. `file` defaults to `assets/pictures/`. Display modes:
@@ -348,8 +348,8 @@ is accepted.
 
 `aspect_mode` reconciles the image with the shape the Commodore's screen is
 seen at, which `[hardware].pixel_aspect` sets:
-`fit` (the default) letterboxes the whole image onto black, `crop`
-center-crops to fill and loses the edges, `hybrid` center-crops to the shape halfway between the
+`crop` (the default) center-crops to fill and loses the edges, `fit`
+letterboxes the whole image onto black, `hybrid` center-crops to the shape halfway between the
 image's and the screen's and letterboxes the rest, `stretch` distorts to fill.
 `hybrid` is the broadcast compromise: a 16:9 picture on a 4:3 screen becomes
 14:9, which trims about 6% off each side and leaves thin bars.
@@ -371,7 +371,7 @@ name = "The Clip"
 display = "mhires"
 file = "~/Videos/clip.mp4"
 start_s = 0.0
-aspect_mode = "fit"
+aspect_mode = "crop"
 ```
 
 *Needs the `video` extra, and the `yt` extra as well for a URL that is a page
@@ -403,10 +403,12 @@ starts on the keyframe at or just before it. To loop one video forever, make it 
 scene; to play it once and exit, set `[playlist].loop = false`.
 
 `aspect_mode` fits each frame to the screen the same way it fits a
-slideshow's pictures: `fit` (the default), `crop`, `hybrid` or `stretch`. A
-widescreen film on an NTSC set, seen at 1.2:1, keeps all of its width with
-tall bars under `fit`; `hybrid` keeps most of it with thin bars, and `crop`
-fills the screen but loses a third of the width.
+slideshow's pictures: `crop` (the default), `fit`, `hybrid` or `stretch`. A
+widescreen film on an NTSC set, seen at 1.2:1, fills the screen under `crop`
+but loses a third of its width; `fit` keeps all of it with tall bars, and
+`hybrid` keeps most of it with thin bars. `crop` is the default because the
+bars cost the picture lines: fitted, a 2.20:1 film keeps about 121 of
+mhires' 200, and faces and thin lines lose their detail.
 
 ### `waveform`
 

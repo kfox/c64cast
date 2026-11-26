@@ -18,8 +18,8 @@ double buffering is off, so frames are pushed in place over host DMA, the
 path whose writes the framebuffer sees and whose per-frame delta is exactly
 what changed on screen. Flicker blending brings its own bank swap regardless.
 
-`aspect_mode` defaults to the scene default (`fit`); pass `"crop"` to
-reproduce numbers taken before that default changed.
+`aspect_mode` defaults to the scene default (`crop`); pass `"fit"` to
+reproduce numbers taken while `fit` was the default.
 """
 
 from __future__ import annotations

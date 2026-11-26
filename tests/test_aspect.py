@@ -18,7 +18,7 @@ from c64cast.app import scene_factory
 from c64cast.app.config import ColorCfg, Config, SceneCfg
 from c64cast.hw.backend import TEENSYROM_PROFILE, ULTIMATE_PROFILE, C64Backend, HardwareProfile
 from c64cast.scenes import scenes
-from c64cast.scenes.scenes import SlideshowScene, WebcamScene
+from c64cast.scenes.scenes import SlideshowScene, VideoScene, WebcamScene
 from c64cast.video.aspect import (
     crop_for_mode,
     crop_to_aspect,
@@ -305,7 +305,7 @@ class SceneFactoryPixelAspectTest(unittest.TestCase):
         scene = scene_factory.build_scene(s, self.cfg, self.api, None, None)
         self.assertEqual(scene.aspect_mode, "hybrid")
 
-    def test_video_and_slideshow_fit_unless_told_otherwise(self):
+    def test_video_and_slideshow_crop_unless_told_otherwise(self):
         video = os.path.join(self.dir, "a.mp4")
         open(video, "wb").close()
         picture = os.path.join(self.dir, "a.png")
@@ -314,7 +314,16 @@ class SceneFactoryPixelAspectTest(unittest.TestCase):
             with self.subTest(scene_type=scene_type):
                 s = SceneCfg(type=scene_type, file=path)
                 scene = scene_factory.build_scene(s, self.cfg, self.api, None, None)
-                self.assertEqual(scene.aspect_mode, "fit")
+                self.assertEqual(scene.aspect_mode, "crop")
+
+    def test_a_scene_built_directly_crops_too(self):
+        clip = os.path.join(self.dir, "a.mp4")
+        open(clip, "wb").close()
+        still = os.path.join(self.dir, "a.png")
+        cv2.imwrite(still, _solid(4, 4))
+        video = VideoScene(api=self.api, audio=None, display_mode=MagicMock(), file=clip)
+        slideshow = SlideshowScene(self.api, MagicMock(), still)
+        self.assertEqual((video.aspect_mode, slideshow.aspect_mode), ("crop", "crop"))
 
     def test_the_live_camera_fallback(self):
         self.cfg.scenes = []

@@ -55,9 +55,9 @@ The source each frame is scored against is decoded at full resolution and
 area-resized, so a decode-filter comparison (`--interp`) is scored against
 the same reference whichever filter feeds the renderer.
 
-`--aspect-mode` frames each picture as a scene's `aspect_mode` does, `fit`
-(the scene default) unless told otherwise; `crop` reproduces runs taken
-before that default changed. Fidelity, SSIM and the still cells count only
+`--aspect-mode` frames each picture as a scene's `aspect_mode` does, `crop`
+(the scene default) unless told otherwise; `fit` reproduces runs taken
+while it was the default. Fidelity, SSIM and the still cells count only
 the screen the picture covers, so the letterbox bars do not dilute them,
 and the color fits read the unpadded picture.
 """
@@ -506,7 +506,7 @@ def main(argv: list[str] | None = None) -> int:
         "--aspect-mode",
         choices=_ASPECT_MODE_CHOICES,
         default=DEFAULT_ASPECT_MODE,
-        help="frame each picture as a scene's aspect_mode does (crop: runs before fit became the default)",
+        help="frame each picture as a scene's aspect_mode does (fit: runs taken while it was the default)",
     )
     sc.add_argument("--interp", help="swscale filter for the decode downscale (AREA, BICUBIC, ...)")
     sc.add_argument(

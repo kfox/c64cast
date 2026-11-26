@@ -183,14 +183,14 @@ Display modes: `mhires`, `hires`, `hires_edges`, `mcm`, `petscii`, `random`.
 [[scenes]]
 type = "slideshow"
 image_duration_s = 5
-aspect_mode = "fit"   # crop | fit | stretch | hybrid
+aspect_mode = "crop"  # crop | fit | stretch | hybrid
 mod_source = "audio"  # audio | clock | off
 ```
 
 <!-- table: fields -->
 | Key | Description |
 |---|---|
-| **`aspect_mode`**<br>*Type:* `str`<br>*Default:* `'fit'` | How each image or video frame is fit to the screen's aspect (which [hardware].pixel_aspect sets): 'fit' (letterbox/pillarbox so the whole picture shows, padded black — the default), 'crop' (center-crop to fill, edges lost), 'hybrid' (center-crop halfway between the source's aspect and the screen's, then letterbox/pillarbox the rest — 16:9 into 4:3 becomes the broadcast 14:9), or 'stretch' (distort to fill, no padding or cropping). Choices: `crop`, `fit`, `stretch`, `hybrid`. |
+| **`aspect_mode`**<br>*Type:* `str`<br>*Default:* `'crop'` | How each image or video frame is fit to the screen's aspect (which [hardware].pixel_aspect sets): 'crop' (center-crop to fill, edges lost — the default, which spends every line on the picture), 'fit' (letterbox/pillarbox so the whole picture shows, padded black), 'hybrid' (center-crop halfway between the source's aspect and the screen's, then letterbox/pillarbox the rest — 16:9 into 4:3 becomes the broadcast 14:9), or 'stretch' (distort to fill, no padding or cropping). Choices: `crop`, `fit`, `stretch`, `hybrid`. |
 | **`color`**<br>*Type:* `dict[str, Any]`<br>*Default:* `{}` | Per-scene [color] override ([scenes.color] sub-table): any [color] field set here replaces the global value for this scene only. Unset fields follow the global [color] section. See `--describe color` for the field list. |
 | **`display`**<br>*Type:* `str \| None`<br>*Default:* `None` | VIC-II display mode. Unset resolves per scene type: 'mhires' for video (richest bitmap mode, suits arbitrary film/photo content) and 'hires_edges' for webcam/blank/slideshow/generative (tuned for live Canny-edge stylization). waveform and midi are bitmap-only (both ignore this); slideshow also accepts 'random'. generative renders a frame so any quantizing mode works (not 'blank'/'random'). Choices: `hires_edges`, `hires`, `petscii`, `mcm`, `mhires`, `blank`, `random`. |
 | **`effect`**<br>*Type:* `str \| None`<br>*Default:* `None` | Pixel effect applied to the frame before quantization (unset = none). Works on any frame-bearing scene. 'trails' echoes moving content; 'pulse' beat-punches the zoom; 'rgb_shift' slews the color channels apart on a transient. pulse/rgb_shift only visibly react on a music-reactive scene (generative + audio_source = 'sid'); elsewhere they're inert (no feature stream to react to). Choices: `trails`, `pulse`, `rgb_shift`, `blur`, `strobe`, `invert`, `mirror`, `posterize`. |
@@ -211,7 +211,7 @@ Display modes: `mhires`, `hires_edges`, `hires`, `mcm`, `petscii`, `blank`.
 ```toml
 [[scenes]]
 type = "video"
-aspect_mode = "fit"       # crop | fit | stretch | hybrid
+aspect_mode = "crop"      # crop | fit | stretch | hybrid
 mod_source = "audio"      # audio | clock | off
 palette_mode = "percell"
 ```
@@ -219,7 +219,7 @@ palette_mode = "percell"
 <!-- table: fields -->
 | Key | Description |
 |---|---|
-| **`aspect_mode`**<br>*Type:* `str`<br>*Default:* `'fit'` | How each image or video frame is fit to the screen's aspect (which [hardware].pixel_aspect sets): 'fit' (letterbox/pillarbox so the whole picture shows, padded black — the default), 'crop' (center-crop to fill, edges lost), 'hybrid' (center-crop halfway between the source's aspect and the screen's, then letterbox/pillarbox the rest — 16:9 into 4:3 becomes the broadcast 14:9), or 'stretch' (distort to fill, no padding or cropping). Choices: `crop`, `fit`, `stretch`, `hybrid`. |
+| **`aspect_mode`**<br>*Type:* `str`<br>*Default:* `'crop'` | How each image or video frame is fit to the screen's aspect (which [hardware].pixel_aspect sets): 'crop' (center-crop to fill, edges lost — the default, which spends every line on the picture), 'fit' (letterbox/pillarbox so the whole picture shows, padded black), 'hybrid' (center-crop halfway between the source's aspect and the screen's, then letterbox/pillarbox the rest — 16:9 into 4:3 becomes the broadcast 14:9), or 'stretch' (distort to fill, no padding or cropping). Choices: `crop`, `fit`, `stretch`, `hybrid`. |
 | **`audio`**<br>*Type:* `bool \| None`<br>*Default:* `None` | Per-scene audio override. Unset follows [audio].enabled; false mutes this scene only. |
 | **`color`**<br>*Type:* `dict[str, Any]`<br>*Default:* `{}` | Per-scene [color] override ([scenes.color] sub-table): any [color] field set here replaces the global value for this scene only. Unset fields follow the global [color] section. See `--describe color` for the field list. |
 | **`display`**<br>*Type:* `str \| None`<br>*Default:* `None` | VIC-II display mode. Unset resolves per scene type: 'mhires' for video (richest bitmap mode, suits arbitrary film/photo content) and 'hires_edges' for webcam/blank/slideshow/generative (tuned for live Canny-edge stylization). waveform and midi are bitmap-only (both ignore this); slideshow also accepts 'random'. generative renders a frame so any quantizing mode works (not 'blank'/'random'). Choices: `hires_edges`, `hires`, `petscii`, `mcm`, `mhires`, `blank`, `random`. |
