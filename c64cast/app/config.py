@@ -2018,7 +2018,8 @@ class ColorCfg:
             "has to be before the five grays win a pixel, in squared color "
             "distance (>= 0). Higher keeps pale and desaturated regions "
             "colorful; lower lets a near-gray wall render gray rather than "
-            'cyan or light red. Ignored by palette_mode = "grayscale".'
+            'cyan or light red. Ignored by palette_mode = "grayscale", and '
+            "while hardware_palette shows colors fitted to the source."
         },
     )
     flat_stickiness: bool = field(

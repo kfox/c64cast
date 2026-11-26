@@ -57,6 +57,7 @@ from .base import (
     advance_palette_cycle,
     ema_counts,
     palette_mode_settings,
+    penalty_for_shown_palette,
     pick_cell_colors,
     resolve_color_shaping,
     shape_for_quantize,
@@ -578,7 +579,10 @@ class MultiHiresDisplayMode(BitmapDisplayMode):
         """The (N, entries) distance function the per-pixel picks run on: the
         active metric plus each entry's penalty."""
         if table is None:
-            penalty = self._gray_penalty * self._penalty_scale
+            penalty = (
+                penalty_for_shown_palette(self.palette_mode, self._gray_penalty)
+                * self._penalty_scale
+            )
             return lambda px: quantize_distances_for(px, perceptual=self._perceptual) + penalty
         assert self._entry_penalty_cache is not None
         penalty = self._entry_penalty_cache * self._penalty_scale

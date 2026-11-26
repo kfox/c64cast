@@ -325,6 +325,7 @@ class HardwarePaletteTest(PaletteSwapTestCase):
         self.assertTrue(self._show())
         self.assertEqual(self.pushes, [_rgb(self.scene_table)])
         np.testing.assert_array_equal(palette.C64_PALETTE_BGR, self.scene_table)
+        self.assertTrue(palette.host_palette_is_fitted())
 
     def test_showing_the_same_table_again_does_not_push(self):
         self._show()
@@ -339,6 +340,7 @@ class HardwarePaletteTest(PaletteSwapTestCase):
             palette.C64_PALETTE_BGR, np.asarray(palette.C64_WIKI_PALETTE_BGR, dtype=np.float32)
         )
         self.assertEqual(palette.active_host_palette_name(), "c64-wiki")
+        self.assertFalse(palette.host_palette_is_fitted())
 
     def test_show_machine_with_nothing_shown_does_not_push(self):
         self.control.show_machine()
