@@ -28,6 +28,7 @@ from c64cast.video.palette import (
     apply_hue_corrections,
     boost_saturation,
     color_name,
+    host_palette_is_fitted,
     make_gray_penalty,
     parse_channel_boost,
     parse_hue_corrections,
@@ -412,6 +413,21 @@ def palette_mode_settings(
             chromatic_strength=GRAYSCALE_CHROMATIC_PENALTY,
         )
     return DEFAULT_SAT_FACTOR, make_gray_penalty(gray_strength=gray_penalty)
+
+
+def penalty_for_shown_palette(palette_mode: str, penalty: np.ndarray) -> np.ndarray:
+    """`palette_mode`'s `penalty` (from `palette_mode_settings`) against the
+    palette the host is aiming at now.
+
+    The gray and pale biases are tuned for a stock palette, whose chromatic
+    entries sit far from the grays. A palette fitted to the source puts its
+    free entries wherever the source is, often beside a gray, and fits them
+    with the grays held as centers that win their own pixels; biased, a
+    letterbox's black lost to a near-black fitted color. Grayscale's penalty
+    is what keeps it gray, on any palette."""
+    if palette_mode == "grayscale" or not host_palette_is_fitted():
+        return penalty
+    return np.zeros_like(penalty)
 
 
 log = logging.getLogger(__name__)

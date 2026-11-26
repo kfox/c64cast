@@ -735,7 +735,7 @@
         },
         "gray_penalty": {
           "type": "number",
-          "description": "mhires and mcm: how much closer a chromatic palette entry has to be before the five grays win a pixel, in squared color distance (>= 0). Higher keeps pale and desaturated regions colorful; lower lets a near-gray wall render gray rather than cyan or light red. Ignored by palette_mode = \"grayscale\".",
+          "description": "mhires and mcm: how much closer a chromatic palette entry has to be before the five grays win a pixel, in squared color distance (>= 0). Higher keeps pale and desaturated regions colorful; lower lets a near-gray wall render gray rather than cyan or light red. Ignored by palette_mode = \"grayscale\", and while hardware_palette shows colors fitted to the source.",
           "default": 2500.0
         },
         "flat_stickiness": {
@@ -2525,7 +2525,7 @@
               },
               "gray_penalty": {
                 "type": "number",
-                "description": "mhires and mcm: how much closer a chromatic palette entry has to be before the five grays win a pixel, in squared color distance (>= 0). Higher keeps pale and desaturated regions colorful; lower lets a near-gray wall render gray rather than cyan or light red. Ignored by palette_mode = \"grayscale\".",
+                "description": "mhires and mcm: how much closer a chromatic palette entry has to be before the five grays win a pixel, in squared color distance (>= 0). Higher keeps pale and desaturated regions colorful; lower lets a near-gray wall render gray rather than cyan or light red. Ignored by palette_mode = \"grayscale\", and while hardware_palette shows colors fitted to the source.",
                 "default": 2500.0
               },
               "flat_stickiness": {

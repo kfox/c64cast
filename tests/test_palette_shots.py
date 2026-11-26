@@ -502,6 +502,7 @@ class BlindControlTest(PaletteSwapTestCase):
     def test_adopt_points_the_quantizer_at_the_table(self):
         self.assertTrue(self.control.adopt(self.table))
         np.testing.assert_array_equal(palette.C64_PALETTE_BGR, self.table)
+        self.assertTrue(palette.host_palette_is_fitted())
 
     def test_a_link_failure_turns_pushing_off(self):
         with (

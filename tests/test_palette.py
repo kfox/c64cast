@@ -230,6 +230,49 @@ class GrayPenaltyTest(unittest.TestCase):
         self.assertNotIn(biased, GRAY_INDICES)
 
 
+class FittedPaletteBlackTest(unittest.TestCase):
+    """A palette fitted to a dark source puts a free entry beside black; the
+    gray penalty, tuned for a stock palette, then handed black's pixels (a
+    letterbox's bars) to that entry."""
+
+    NEAR_BLACK = 9
+
+    def setUp(self):
+        before = palette_mod.C64_PALETTE_BGR.copy(), palette_mod.active_host_palette_name()
+        self.addCleanup(lambda: palette_mod.set_host_palette(before[0], name=before[1]))
+        self.table = palette_mod.C64_PALETTE_BGR.copy()
+        self.table[self.NEAR_BLACK] = (24, 9, 1)
+
+    def _black_picks(self) -> list[tuple[str, int]]:
+        from c64cast.video.modes import MCMDisplayMode, MultiHiresDisplayMode
+
+        black = np.zeros((200, 320, 3), dtype=np.uint8)
+        mhires = MultiHiresDisplayMode("percell")
+        mhires.compose(black)
+        mcm = MCMDisplayMode("percell").compose(black)
+        assert mhires._bg0 is not None
+        return [("mhires bg0", mhires._bg0), ("mcm bg0", int(mcm["bg"][0]))]
+
+    def test_a_fitted_palettes_black_wins_black_pixels(self):
+        palette_mod.set_host_palette(self.table, name="fitted", fitted=True)
+        for where, index in self._black_picks():
+            self.assertEqual(index, 0, where)
+
+    def test_the_stock_palettes_penalty_still_applies(self):
+        palette_mod.set_host_palette(self.table, name="custom")
+        for where, index in self._black_picks():
+            self.assertEqual(index, self.NEAR_BLACK, where)
+
+    def test_grayscale_keeps_its_chromatic_penalty(self):
+        from c64cast.video.modes.base import palette_mode_settings, penalty_for_shown_palette
+
+        palette_mod.set_host_palette(self.table, name="fitted", fitted=True)
+        _, penalty = palette_mode_settings("grayscale")
+        shown = penalty_for_shown_palette("grayscale", penalty)
+        for i in CHROMATIC_INDICES:
+            self.assertGreater(shown[i], 0.0)
+
+
 class BoostSaturationTest(unittest.TestCase):
     def test_identity_when_factor_is_one(self):
         img = np.random.default_rng(0).integers(0, 256, (10, 10, 3)).astype(np.uint8)

@@ -411,6 +411,7 @@ def resolve_host_palette(name: str) -> tuple[tuple[int, int, int], ...]:
 
 # Which palette the active table came from, for the ensemble conflict check.
 _ACTIVE_PALETTE_NAME = "c64-wiki"
+_ACTIVE_PALETTE_FITTED = False
 
 
 def active_host_palette_name() -> str:
@@ -428,8 +429,16 @@ def palette_generation() -> int:
     return _PALETTE_GENERATION
 
 
-def set_host_palette(colors: Sequence[Sequence[int]] | np.ndarray, *, name: str = "custom") -> None:
-    """Point the whole render pipeline at the 16 BGR colors the host emits.
+def host_palette_is_fitted() -> bool:
+    """Whether the active palette was fitted to the source being shown."""
+    return _ACTIVE_PALETTE_FITTED
+
+
+def set_host_palette(
+    colors: Sequence[Sequence[int]] | np.ndarray, *, name: str = "custom", fitted: bool = False
+) -> None:
+    """Point the whole render pipeline at the 16 BGR colors the host emits;
+    `fitted` says they were fitted to the source (`derive_hardware_palette`).
 
     Called once before any rendering, and again by `[color].hardware_palette`
     whenever a scene changes the colors the machine emits. Every palette-derived
@@ -447,8 +456,9 @@ def set_host_palette(colors: Sequence[Sequence[int]] | np.ndarray, *, name: str 
     table = np.asarray(colors, dtype=np.float32)
     if table.shape != (16, 3):
         raise ValueError(f"host palette must be 16 BGR triples, got shape {table.shape}")
-    global _ACTIVE_PALETTE_NAME
+    global _ACTIVE_PALETTE_NAME, _ACTIVE_PALETTE_FITTED
     _ACTIVE_PALETTE_NAME = name
+    _ACTIVE_PALETTE_FITTED = fitted
     if np.array_equal(table, C64_PALETTE_BGR):
         return
     global _WPAL, _PAL_NORMSQ, _PAL_LAB_T, _PAL_LAB_NORMSQ, _PALETTE_HUES_DEG, _PALETTE_GENERATION
@@ -1490,8 +1500,8 @@ def suggest_palette(samples_lab: np.ndarray, max_k: int = 16) -> list[tuple[int,
 
 # Image-optimized hardware palettes ([color].hardware_palette = "source"). The
 # gray axis stays the machine's own: fades end on index 0, cards and overlays
-# draw in 0 and 1, and the gray penalty and grayscale mode are written against
-# those five indices. The other eleven are re-chosen from the source.
+# draw in 0 and 1, and grayscale mode is written against those five indices.
+# The other eleven are re-chosen from the source.
 HARDWARE_PALETTE_CHOICES: tuple[str, ...] = ("off", "source", "auto")
 # The scene types that can see their content before they paint it.
 HARDWARE_PALETTE_SCENE_TYPES: tuple[str, ...] = ("video", "slideshow")

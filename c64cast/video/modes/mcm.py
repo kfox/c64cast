@@ -28,6 +28,7 @@ from .base import (
     advance_palette_cycle,
     ema_counts,
     palette_mode_settings,
+    penalty_for_shown_palette,
     resolve_color_shaping,
     shape_for_quantize,
     validate_palette_mode,
@@ -210,7 +211,10 @@ class MCMDisplayMode(CharDisplayMode):
             # argmin, bg picker and per-cell fg search must agree on which entry
             # wins — so the bias is applied once, in place.
             all_d = quantize_distances_for(flat, perceptual=self._perceptual)  # (4000, 16)
-            all_d += self._gray_penalty * self._penalty_scale
+            all_d += (
+                penalty_for_shown_palette(self.palette_mode, self._gray_penalty)
+                * self._penalty_scale
+            )
         per_pixel = np.argmin(all_d, axis=1)
         if self._fixed_bg is not None:
             bg = self._fixed_bg

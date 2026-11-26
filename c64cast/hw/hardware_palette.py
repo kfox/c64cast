@@ -449,7 +449,7 @@ class HardwarePalette:
                 log.info("%s: hardware_palette -> pushed %s", scene, _table_name(table))
             if self._shown is None or not np.array_equal(table, self._shown):
                 self._shown = table.copy()
-                self._set_host(table, _table_name(table))
+                self._set_host(table, _table_name(table), fitted=True)
             return True
 
     def release(self) -> None:
@@ -525,7 +525,7 @@ class HardwarePalette:
             self._on_machine = table.copy()
             if self._shown is None or not np.array_equal(table, self._shown):
                 self._shown = table.copy()
-                self._set_host(table, _table_name(table))
+                self._set_host(table, _table_name(table), fitted=True)
             return True
 
     def go(self, cued: bool) -> None:
@@ -582,10 +582,10 @@ class HardwarePalette:
         )
 
     @staticmethod
-    def _set_host(table_bgr: np.ndarray, name: str) -> None:
+    def _set_host(table_bgr: np.ndarray, name: str, *, fitted: bool = False) -> None:
         from c64cast.video.palette import set_host_palette
 
-        set_host_palette(table_bgr, name=name)
+        set_host_palette(table_bgr, name=name, fitted=fitted)
 
 
 class ShotPusher:

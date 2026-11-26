@@ -968,7 +968,8 @@ auto_fit_shot_relax = 0.5
 # gray_penalty (mhires and mcm): how much closer a chromatic palette entry must
 # be before the five grays win a pixel, in squared color distance. Higher keeps
 # pale and desaturated regions colorful; lower lets a near-gray wall render
-# gray instead of cyan or light red. Default 2500.
+# gray instead of cyan or light red. Not applied while hardware_palette shows
+# colors fitted to the source. Default 2500.
 gray_penalty = 2500.0
 #
 # flat_stickiness (mhires percell): hold a pixel's color up to four times as
