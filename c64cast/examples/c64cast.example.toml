@@ -1014,7 +1014,9 @@ hardware_palette = "off"
 # hardware_palette_shots: with hardware_palette = "source", each shot of a
 # video gets its own 16 colors, fitted to its first two seconds and changed on
 # its first frame; a dissolve that drifts away from them gets a new set too.
-# Shots under 1.3 s keep the colors before. false = one set per video.
+# Shots under 1.5 s on an Ultimate (1.35 s outside a double-buffered bitmap
+# mode), or 0.5 s on a Kawari, keep the colors before. false = one set per
+# video.
 hardware_palette_shots = true
 #
 # hue_corrections: one band is built in, "gold bright", a V x1.3 lift for
