@@ -1500,8 +1500,8 @@ def suggest_palette(samples_lab: np.ndarray, max_k: int = 16) -> list[tuple[int,
 
 # Image-optimized hardware palettes ([color].hardware_palette = "source"). The
 # gray axis stays the machine's own: fades end on index 0, cards and overlays
-# draw in 0 and 1, and the gray penalty and grayscale mode are written against
-# those five indices. The other eleven are re-chosen from the source.
+# draw in 0 and 1, and grayscale mode is written against those five indices.
+# The other eleven are re-chosen from the source.
 HARDWARE_PALETTE_CHOICES: tuple[str, ...] = ("off", "source", "auto")
 # The scene types that can see their content before they paint it.
 HARDWARE_PALETTE_SCENE_TYPES: tuple[str, ...] = ("video", "slideshow")
