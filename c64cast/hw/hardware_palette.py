@@ -723,7 +723,10 @@ class ShotPusher:
         return None
 
     def _fit_next(self) -> None:
-        from c64cast.video.palette import derive_hardware_palette, hardware_palette_error
+        from c64cast.video.palette import (
+            derive_hardware_palette,
+            hardware_palette_baseline,
+        )
 
         with self._cond:
             shot = self._to_fit.popleft()
@@ -732,8 +735,7 @@ class ShotPusher:
         )
         if table is None:
             return
-        baseline = float(np.mean([hardware_palette_error(f, table) for f in shot.frames]))
-        shot.fitted(table, baseline)
+        shot.fitted(table, hardware_palette_baseline(shot.frames, table))
         shot.frames = []
         with self._cond:
             self._to_load.append(shot)

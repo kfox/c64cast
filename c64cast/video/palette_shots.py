@@ -23,7 +23,7 @@ from collections.abc import Callable
 
 import numpy as np
 
-from c64cast.video.palette import hardware_palette_error
+from c64cast.video.palette import PaletteError, hardware_palette_error
 from c64cast.video.rolling_palette import _downscale
 from c64cast.video.shots import SHOT_CUT_RATIO, AdaptiveCutDetector
 
@@ -37,7 +37,10 @@ _LOAD_MARGIN_S = 0.1
 # measured, with room for a busy host.
 FIT_ALLOWANCE_S = 0.3
 # A stretch has drifted once its frames sit this many times farther from its
-# table than the frames it was fitted to, for this many frames running.
+# table than the frames it was fitted to, or have this many times the share of
+# pixels with no close color in it, for this many frames running. The share
+# catches a new color too small to move the mean: Tron's gold light cycle, at
+# 1% of the frame, rendered gray.
 DRIFT_RATIO = 1.6
 DRIFT_FRAMES = 5
 
@@ -61,22 +64,24 @@ class PaletteShot:
     """One stretch: its first frame's pts, the shaped frames its table is
     fitted to, and, once fitted, the table and how far those frames sit from
     it. `starts_over` marks the first stretch after a seek, ahead of which
-    nothing still queued will be shown."""
+    nothing still queued will be shown; `drifted` one that starts where the
+    frames drifted rather than at a cut."""
 
-    def __init__(self, pts: float, *, starts_over: bool = False) -> None:
+    def __init__(self, pts: float, *, starts_over: bool = False, drifted: bool = False) -> None:
         self.pts = pts
         self.starts_over = starts_over
+        self.drifted = drifted
         self.seq = next(_seq)
         self.frames: list[np.ndarray] = []
         self._lock = threading.Lock()
-        self._fit: tuple[np.ndarray, float] | None = None
+        self._fit: tuple[np.ndarray, PaletteError] | None = None
 
-    def fitted(self, table_bgr: np.ndarray, baseline: float) -> None:
+    def fitted(self, table_bgr: np.ndarray, baseline: PaletteError) -> None:
         with self._lock:
             self._fit = (table_bgr, baseline)
 
     @property
-    def fit(self) -> tuple[np.ndarray, float] | None:
+    def fit(self) -> tuple[np.ndarray, PaletteError] | None:
         with self._lock:
             return self._fit
 
@@ -139,22 +144,37 @@ class PaletteShotTracker:
                 if self._collecting and self._shot is not None:
                     del self._shot.frames[-(len(since) - 1) :]
                 return self._start(since)
+            if self._collecting and self._shot is not None and self._shot.drifted:
+                return self._move_start(self._shot, since)
         elif self._drifted(shaped):
             since = list(self._recent)[-DRIFT_FRAMES:]
             if self._room_after(since[0][0]):
-                return self._start(since)
+                return self._start(since, drifted=True)
         self._collect(pts, shaped, shown_pts)
         return None
 
     def _room_after(self, pts: float) -> bool:
         return self._shot is None or pts - self._shot.pts >= self._min_stretch_s
 
+    def _move_start(
+        self, shot: PaletteShot, frames: list[tuple[float, np.ndarray]]
+    ) -> tuple[float, PaletteShot]:
+        """A cut soon after a drift start, before that stretch's fit: the drift
+        was the cut coming, or a change the cut ends. Left where it was, the
+        cut would be too close to it for a stretch of its own, and the table
+        would be fitted across it."""
+        shot.pts = frames[0][0]
+        shot.frames = [f for _, f in frames]
+        shot.drifted = False
+        return shot.pts, shot
+
     def _drifted(self, shaped: np.ndarray) -> bool:
         fit = None if self._shot is None else self._shot.fit
         if fit is None:
             return False
         table, baseline = fit
-        if hardware_palette_error(shaped, table) > DRIFT_RATIO * baseline:
+        error = hardware_palette_error(shaped, table)
+        if error.mean > DRIFT_RATIO * baseline.mean or error.missed > DRIFT_RATIO * baseline.missed:
             self._drifting += 1
         else:
             self._drifting = 0
@@ -176,10 +196,14 @@ class PaletteShotTracker:
             self._on_ready(self._shot)
 
     def _start(
-        self, frames: list[tuple[float, np.ndarray]], *, starts_over: bool = False
+        self,
+        frames: list[tuple[float, np.ndarray]],
+        *,
+        starts_over: bool = False,
+        drifted: bool = False,
     ) -> tuple[float, PaletteShot]:
         self._finish()
-        shot = PaletteShot(frames[0][0], starts_over=starts_over)
+        shot = PaletteShot(frames[0][0], starts_over=starts_over, drifted=drifted)
         shot.frames.extend(f for _, f in frames)
         self._shot = shot
         self._collecting = True

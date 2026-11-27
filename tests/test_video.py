@@ -5507,6 +5507,14 @@ class SourceShotMarkTest(unittest.TestCase):
         self.assertTrue(src._enqueue_frame(0.6, self.IMG))
         self.assertEqual(src._shot_marks, {0.5: shot})
 
+    def test_a_stretch_whose_start_moved_keeps_one_mark_at_the_new_start(self):
+        src = self._src()
+        shot = ShotFit(frames=1)
+        src.shot_tracker = mock.Mock(observe=mock.Mock(side_effect=[(0.5, shot), (0.7, shot)]))
+        src._enqueue_frame(0.6, self.IMG)
+        src._enqueue_frame(0.8, self.IMG)
+        self.assertEqual(src._shot_marks, {0.7: shot})
+
     def test_a_frame_dropped_for_a_pending_seek_leaves_no_mark(self):
         src = self._src()
         src.shot_tracker = mock.Mock(observe=mock.Mock(return_value=(0.5, ShotFit(frames=1))))

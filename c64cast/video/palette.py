@@ -12,7 +12,7 @@ from collections import deque
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, NamedTuple, cast
 
 import cv2
 import numpy as np
@@ -1513,6 +1513,11 @@ _HARDWARE_PALETTE_ITERATIONS = 20
 # lit subject: a face zooming in on black never moved the mean far enough
 # to call for a table that holds its colors.
 HARDWARE_PALETTE_DARK_LEVEL = 24
+# A lit pixel this far (Lab) from every color in a table has no color of its
+# own there. Tron's gold light cycle, against a table fitted before it came
+# in, sat 42-47 away and rendered gray; the table fitted to it brought it to
+# 18-22.
+HARDWARE_PALETTE_MISS_DISTANCE = 30.0
 
 
 def wants_hardware_palette(color: ColorCfg) -> bool:
@@ -1649,18 +1654,36 @@ def _round_to_channel_bits(table_bgr: np.ndarray, bits: int) -> np.ndarray:
     return np.rint(levels * 255 / top).astype(np.uint8)
 
 
-def hardware_palette_error(frame_bgr: np.ndarray, table_bgr: np.ndarray) -> float:
-    """How far `frame_bgr`'s lit pixels sit from their nearest of the 16
-    colors in `table_bgr`: the mean Lab distance, over every fourth pixel
-    brighter than `HARDWARE_PALETTE_DARK_LEVEL`; 0.0 when none is."""
+class PaletteError(NamedTuple):
+    """How far a frame's lit pixels sit from a table: `mean` is the mean Lab
+    distance to the nearest of its 16 colors, and `missed` the share of them
+    farther than `HARDWARE_PALETTE_MISS_DISTANCE` from all of them."""
+
+    mean: float
+    missed: float
+
+
+def hardware_palette_error(frame_bgr: np.ndarray, table_bgr: np.ndarray) -> PaletteError:
+    """`frame_bgr` against `table_bgr`, over every fourth pixel brighter than
+    `HARDWARE_PALETTE_DARK_LEVEL`; zero when none is."""
     px = np.asarray(frame_bgr, dtype=np.float32).reshape(-1, 3)[::4]
     px = px[px.max(axis=1) > HARDWARE_PALETTE_DARK_LEVEL]
     if px.shape[0] == 0:
-        return 0.0
+        return PaletteError(0.0, 0.0)
     lab = _bgr_to_lab(px)
     centers = _bgr_to_lab(np.asarray(table_bgr, dtype=np.float32).reshape(16, 3))
     d = (lab**2).sum(axis=1)[:, None] - 2.0 * lab @ centers.T + (centers**2).sum(axis=1)
-    return float(np.sqrt(np.maximum(d.min(axis=1), 0.0)).mean())
+    nearest = np.sqrt(np.maximum(d.min(axis=1), 0.0))
+    return PaletteError(
+        float(nearest.mean()), float((nearest > HARDWARE_PALETTE_MISS_DISTANCE).mean())
+    )
+
+
+def hardware_palette_baseline(frames: Sequence[np.ndarray], table_bgr: np.ndarray) -> PaletteError:
+    """The mean of `hardware_palette_error` over the frames `table_bgr` was
+    fitted to."""
+    errors = [hardware_palette_error(f, table_bgr) for f in frames]
+    return PaletteError(*(float(v) for v in np.mean(errors, axis=0)))
 
 
 def _nearest_center(samples: np.ndarray, centers: np.ndarray) -> np.ndarray:
