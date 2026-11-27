@@ -101,6 +101,8 @@ def _solid(bgr, noise: int = 0, seed: int = 0) -> np.ndarray:
 RED = (40, 40, 200)
 DIM_RED = tuple(round(v * 0.3) for v in RED)
 BLUE = (200, 60, 30)
+# Farther from every machine color than HARDWARE_PALETTE_MISS_DISTANCE.
+GOLD = (30, 200, 240)
 
 
 class _Recorder:
@@ -113,8 +115,7 @@ class _Recorder:
     def __call__(self, shot: ps.PaletteShot) -> None:
         table = palette.derive_hardware_palette(shot.frames, MACHINE)
         assert table is not None
-        base = float(np.mean([palette.hardware_palette_error(f, table) for f in shot.frames]))
-        shot.fitted(table, base)
+        shot.fitted(table, palette.hardware_palette_baseline(shot.frames, table))
         self.ready.append(shot)
 
 
@@ -153,14 +154,22 @@ class HardwarePaletteErrorTest(unittest.TestCase):
         half_dark = red.copy()
         half_dark[:, :40] = palette.HARDWARE_PALETTE_DARK_LEVEL
         self.assertAlmostEqual(
-            palette.hardware_palette_error(half_dark, MACHINE),
-            palette.hardware_palette_error(red, MACHINE),
+            palette.hardware_palette_error(half_dark, MACHINE).mean,
+            palette.hardware_palette_error(red, MACHINE).mean,
             places=4,
+        )
+
+    def test_missed_is_the_share_of_lit_pixels_far_from_every_color(self):
+        frame = _solid(MACHINE[2])
+        frame[:, :20] = GOLD
+        frame[:, 20:40] = palette.HARDWARE_PALETTE_DARK_LEVEL
+        self.assertAlmostEqual(
+            palette.hardware_palette_error(frame, MACHINE).missed, 1 / 3, places=2
         )
 
     def test_a_frame_with_nothing_lit_has_no_error(self):
         dark = _solid((palette.HARDWARE_PALETTE_DARK_LEVEL,) * 3)
-        self.assertEqual(palette.hardware_palette_error(dark, MACHINE), 0.0)
+        self.assertEqual(palette.hardware_palette_error(dark, MACHINE), (0.0, 0.0))
 
 
 class PaletteShotTrackerTest(unittest.TestCase):
@@ -232,7 +241,7 @@ class PaletteShotTrackerTest(unittest.TestCase):
             dim = tuple(round(v * (1 - 0.7 * (k + 1) / FPS)) for v in RED)
             frames.append(_solid(dim, noise=6, seed=1000 + k))
         frames += _frames((DIM_RED, 3))
-        with mock.patch.object(ps, "DRIFT_RATIO", 1e9):
+        with mock.patch.object(ps.PaletteShotTracker, "_drifted", return_value=False):
             starts, _, _ = _track(frames)
         self.assertEqual(starts, [0.0])
 
@@ -240,7 +249,7 @@ class PaletteShotTrackerTest(unittest.TestCase):
         frames = [_solid(BLUE, noise=40, seed=i) for i in range(int(3 * FPS))]
         for k in range(int(FPS)):
             frames.append((frames[k].astype(np.float32) * (1 - (k + 1) / FPS)).astype(np.uint8))
-        frames += [_solid((0, 0, 0)) for _ in range(int(FPS))]
+        frames += [_solid((0, 0, 0)) for _ in range(int(3 * FPS))]
         grow = int(4 * FPS)
         for k in range(grow):
             frame = _solid((0, 0, 0))
@@ -248,7 +257,35 @@ class PaletteShotTrackerTest(unittest.TestCase):
             frame[24 : 24 + side, 34 : 34 + side] = RED
             frames.append(frame)
         starts, _, _ = _track(frames)
-        self.assertGreater(starts[-1], 5.0, starts)
+        self.assertGreaterEqual(starts[-1], 7.0, starts)
+
+    def test_a_new_color_too_small_to_move_the_mean_starts_a_stretch(self):
+        frames = _frames((BLUE, 6))
+        for f in frames[int(3 * FPS) :]:
+            f[20:25, 30:40] = GOLD
+        starts, rec, _ = _track(frames)
+        self.assertEqual(len(starts), 2, starts)
+        self.assertGreaterEqual(starts[1], 3.0)
+        fit = rec.ready[1].fit
+        assert fit is not None
+        self.assertEqual(palette.hardware_palette_error(frames[-1], fit[0]).missed, 0.0)
+
+    def test_a_cut_just_after_a_drift_start_moves_the_start_to_the_cut(self):
+        frames = _frames((RED, 3))
+        for k in range(10):
+            dim = tuple(round(v * (1 - 0.07 * (k + 1))) for v in RED)
+            frames.append(_solid(dim, noise=6, seed=1000 + k))
+        cut_pts = len(frames) / FPS
+        frames += _frames((BLUE, 3))
+        starts, rec, _ = _track(frames)
+        self.assertEqual(starts[-1], cut_pts, starts)
+        self.assertEqual([s.pts for s in rec.ready], [0.0, cut_pts])
+        moved = rec.ready[1]
+        self.assertFalse(moved.drifted)
+        self.assertEqual(len(moved.frames), int(ps.FIT_S * FPS))
+        fit = moved.fit
+        assert fit is not None
+        self.assertLess(palette.hardware_palette_error(frames[-1], fit[0]).mean, 10.0)
 
     def test_steady_frames_never_drift(self):
         starts, _, _ = _track(_frames((RED, 8)))

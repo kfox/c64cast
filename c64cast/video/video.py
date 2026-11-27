@@ -1873,7 +1873,7 @@ class AVFileSource:
                 if len(self._video_buf) < self.max_video_buffer + self._dry_extra_frames():
                     self._video_buf.append((pts, img))
                     if cut is not None:
-                        self._shot_marks[cut[0]] = cut[1]
+                        self._mark_shot(*cut)
                     return True
                 oldest, newest = self._video_buf[0][0], self._video_buf[-1][0]
                 # The stamp the clock must reach for the picture to move:
@@ -1885,6 +1885,13 @@ class AVFileSource:
             self._watch_dry_pace(time.monotonic(), due_pts, taken, clock_read)
             self._fill_dry_stretch(oldest, newest)
             time.sleep(0.005)
+
+    def _mark_shot(self, pts: float, shot: ShotFit | PaletteShot) -> None:
+        """Under `_lock`. A stretch whose start the tracker moved keeps one
+        mark, at its new start."""
+        for marked in [p for p, s in self._shot_marks.items() if s is shot]:
+            del self._shot_marks[marked]
+        self._shot_marks[pts] = shot
 
     def _observe_shot(
         self, pts: float, img: np.ndarray
