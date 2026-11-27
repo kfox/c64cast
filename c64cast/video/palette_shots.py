@@ -166,7 +166,6 @@ class PaletteShotTracker:
         shot.pts = frames[0][0]
         shot.frames = [f for _, f in frames]
         shot.drifted = False
-        self._drifting = 0
         return shot.pts, shot
 
     def _drifted(self, shaped: np.ndarray) -> bool:
