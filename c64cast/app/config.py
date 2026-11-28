@@ -2282,8 +2282,9 @@ class ColorCfg:
             "'auto' or 0..1. Only pixels on an edge are sharpened, so flat areas "
             "keep their grain steady; it crisps soft footage, lines and grids, at the "
             "cost of some extra shimmer along those edges. 0 turns it off. 'auto' "
-            f"(default) is {VIDEO_SHARPEN} for video scenes and 0 for webcam, "
-            "generative and slideshow scenes. mhires only.",
+            f"(default) is {VIDEO_SHARPEN} for video scenes, 0 while a palette fitted to "
+            "the source is showing (hardware_palette), and 0 for webcam, generative "
+            "and slideshow scenes. mhires only.",
             "choices": ("auto",),
         },
     )

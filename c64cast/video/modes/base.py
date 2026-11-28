@@ -153,8 +153,11 @@ VIDEO_MOTION_SMOOTHING = 0.3
 # [color].input_smoothing's "auto" on video. Live and still content stays at 0
 # because none of it was judged with input smoothing on.
 VIDEO_INPUT_SMOOTHING = 0.8
-# [color].sharpen's "auto" on video, the strength judged best on a U64; 0.6
-# made faces jagged. Live and still content was never judged sharpened.
+# [color].sharpen's "auto" on video, the strength judged best on a U64 against
+# the stock palette; 0.6 made faces jagged. Live and still content was never
+# judged sharpened. On a palette fitted to the source, "auto" is 0: the
+# overshoot's dark fringe needs a fitted shade of its own, a cell runs out of
+# colors, and one-pixel lines such as Tron's grid break into dashes.
 VIDEO_SHARPEN = 0.3
 
 # Bitmap-code hysteresis for the percell path, in d² space (the units

@@ -745,7 +745,7 @@ Bool, default on, mhires percell only. `compose` computes a flatness weight `g` 
 
 ### `[color].sharpen` — edge-gated unsharp mask before quantizing
 
-`"auto"` (default) or 0..1, mhires only. `"auto"` is `base.VIDEO_SHARPEN` (0.3) on video scenes and 0 elsewhere, resolved by `scene_factory.resolve_sharpen` in `build_wired_display_mode`. `MultiHiresDisplayMode._sharpen_edges` runs after `_smooth_still_input`, so the smoothed history never carries sharpening. It adds `sharpen` × (frame − Gaussian blur, σ 1) to each pixel, scaled by an edge gate. The gate is the Sobel magnitude of the blurred luma, fading in from 30 to 90 (`_SHARPEN_EDGE_LEVELS`), so flat areas get no sharpening.
+`"auto"` (default) or 0..1, mhires only. `"auto"` is `base.VIDEO_SHARPEN` (0.3) on video scenes and 0 elsewhere, and 0 on every scene while a palette fitted to the source is showing. `scene_factory.resolve_sharpen` resolves it in `build_wired_display_mode` into a stock strength and a fitted strength; an explicit number is both. `compose` picks one per frame by `palette_is_fitted`, as `quantizer_input` picks its shaping. `MultiHiresDisplayMode._sharpen_edges` runs after `_smooth_still_input`, so the smoothed history never carries sharpening. It adds `sharpen` × (frame − Gaussian blur, σ 1) to each pixel, scaled by an edge gate. The gate is the Sobel magnitude of the blurred luma, fading in from 30 to 90 (`_SHARPEN_EDGE_LEVELS`), so flat areas get no sharpening.
 
 **What it costs.** It can only add contrast at boundaries, and boundaries are where the remaining shimmer sits. Over eight clips (`scripts/diags/mhires_video_eval.py`), against the defaults with it off:
 
@@ -756,6 +756,8 @@ Bool, default on, mhires percell only. `compose` computes a flatness weight `g` 
 Those metrics score closeness to the source, not crispness, so they can show what it costs but not what it gains. The gain is visual: soft footage, lines and grids read sharper. That makes it a per-source choice.
 
 **On a U64**, playing the same film segment at 0, 0.3 and 0.6, 0.3 looked best, with no distracting halos. 0.6 looked too sharp and jagged on facial close-ups. It also tipped more amber surfaces green. At 0.3, three more sources were judged good on a U64: a low-quality clip with hard cuts, a short animated logo clip and a full-length music video. So `"auto"` turns it on at 0.3 for video. Webcam, generative and slideshow content was never judged sharpened, so it stays off there.
+
+**On a fitted palette it stays off.** Those judgments were made against the stock palette. Against a shot's fitted palette, 0.3 broke Tron's one-pixel grid lines into dashes: the overshoot turns a line into a bright core with a dark fringe, the fitted table holds several navy shades for that fringe to land on, and the 4×8 cell runs out of colors and drops the line. On the stock palette the fringe lands on black and the line survives. `gray_penalty`, `flat_stickiness`, `dither`, `motion_smoothing` and `input_smoothing` each left the dashes in place. On a C64 Ultimate with per-shot palettes, 0 kept the grid whole, and faces in a music video looked as good or better than at 0.3. Sharpening doesn't feed the palette fit, which reads `quantizer_input`'s output, so turning it off changes only the render.
 
 ### `petscii_styles.py`
 
