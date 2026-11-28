@@ -349,6 +349,7 @@ def _build_display_mode(
     motion_smoothing: float = DEFAULT_MOTION_SMOOTHING,
     input_smoothing: float = 0.0,
     sharpen: float = 0.0,
+    sharpen_fitted: float = 0.0,
 ) -> DisplayMode:
     border = resolve_color(border)
     background = resolve_color(background)
@@ -428,6 +429,7 @@ def _build_display_mode(
             motion_smoothing=motion_smoothing,
             input_smoothing=input_smoothing,
             sharpen=sharpen,
+            sharpen_fitted=sharpen_fitted,
             auto_fit_strength=auto_fit_strength,
             auto_fit_white_level=color.auto_fit_white_level,
             flicker_tolerance=flicker_tolerance,
@@ -788,6 +790,7 @@ def build_wired_display_mode(display: str, wiring: DisplayWiring) -> DisplayMode
     if flicker_tolerance != "off":
         use_reu_staged = False
         double_buffer = False
+    sharpen, sharpen_fitted = resolve_sharpen(color.sharpen, wiring.scene_type)
     return _build_display_mode(
         display,
         palette_mode=wiring.palette_mode,
@@ -804,7 +807,8 @@ def build_wired_display_mode(display: str, wiring: DisplayWiring) -> DisplayMode
         flicker_tolerance=flicker_tolerance,
         motion_smoothing=resolve_motion_smoothing(color.motion_smoothing, wiring.scene_type),
         input_smoothing=resolve_input_smoothing(color.input_smoothing, wiring.scene_type),
-        sharpen=resolve_sharpen(color.sharpen, wiring.scene_type),
+        sharpen=sharpen,
+        sharpen_fitted=sharpen_fitted,
     )
 
 
@@ -1550,12 +1554,12 @@ def resolve_input_smoothing(setting: str | float, scene_type: str) -> float:
     return VIDEO_INPUT_SMOOTHING if scene_type == "video" else 0.0
 
 
-def resolve_sharpen(setting: str | float, scene_type: str) -> float:
-    """Resolve [color].sharpen's `"auto"` for a scene type; an explicit number
-    passes through unchanged."""
+def resolve_sharpen(setting: str | float, scene_type: str) -> tuple[float, float]:
+    """Resolve [color].sharpen for a scene type into its strength on the stock
+    palette and on a palette fitted to the source; an explicit number is both."""
     if setting != "auto":
-        return float(setting)
-    return VIDEO_SHARPEN if scene_type == "video" else 0.0
+        return float(setting), float(setting)
+    return (VIDEO_SHARPEN if scene_type == "video" else 0.0), 0.0
 
 
 def _auto_or_unit_error(label: str, name: str, value: str | float) -> str | None:

@@ -87,7 +87,8 @@ moving pixels alone. `"auto"` turns it on for video; `0` turns it off.
 
 **`sharpen`**, also `mhires` only, crisps soft footage by sharpening its edges,
 at the cost of a little extra shimmer along them. `"auto"` uses `0.3` for
-video and turns it off for everything else; `0` turns it off. Lower it for a
+video, turns it off while a palette fitted to the source is showing, and turns
+it off for everything else; `0` turns it off. Lower it for a
 source that is already sharp; higher values make close-ups of faces look
 jagged and can tip amber tones toward green.
 

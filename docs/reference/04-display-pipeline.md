@@ -500,7 +500,7 @@ Values run from 0 to 1.
 
 | Value | Behavior |
 |---|---|
-| `"auto"` | The default: `0.3` for video scenes, off for webcam, generative and slideshow scenes |
+| `"auto"` | The default: `0.3` for video scenes, off while a palette fitted to the source is showing (["Choosing the Sixteen"](#choosing-the-sixteen--hardware_palette)), and off for webcam, generative and slideshow scenes |
 | `0` | Off |
 
 At `0.6`, close-ups of faces look jagged. It affects only `mhires`.
